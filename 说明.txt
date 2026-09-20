@@ -1,0 +1,223 @@
+MiniMax H3 Ref2VA 多段拼接 生成说明
+以下说明基于整个对话中逐步确认、纠正和验证的全部规则，按实际操作流程排列。
+
+一、前置准备
+1.1 素材整理
+将所有参考图片放入 shared_params/ 目录，按全局编号命名：
+
+编号	素材	用途
+Picture1.png	楚辞	角色参考
+Picture2.png	毒尊	角色参考
+Picture3.png	师父	角色参考
+Picture4.png	徒弟	角色参考
+Picture5.png	九幽毒渊	场景参考
+Picture6.png	新世界	场景参考
+Picture7.png	系统面板	界面参考
+无图片的实体（发光蘑菇）用纯文本描述。
+
+1.2 全局编号分配
+会说话的角色按全片首次发声顺序分配编号，排在前面：
+
+顺序	角色	首次发声段	<Subject N>	(Sx)
+1	楚辞	seg01	<Subject 1>	(S1)
+2	系统面板	seg02	<Subject 2>	(S2)
+3	毒尊	seg08b	<Subject 3>	(S3)
+4	徒弟	seg15a	<Subject 4>	(S4)
+5	师父	seg15b	<Subject 5>	(S5)
+不说话的角色排在后面：
+
+角色	<Subject N>	素材
+九幽毒渊	<Subject 6>	<Picture 5>
+发光蘑菇	<Subject 7>	纯文本
+新世界	<Subject 8>	<Picture 6>
+1.3 音色描述定义
+会说话角色的音色描述只在 subject_definitions 中定义一次，跨段逐字复用：
+
+角色	固定音色描述
+楚辞	speaking with a young male voice, slightly hoarse, tired but determined, measured and urgent. (S1)
+系统面板	speaking with a neutral synthesized voice, crisp and rhythmic, no emotional variation, faint metallic timbre. (S2)
+毒尊	speaking with a mature male voice, smooth and resonant, lazy and arrogant, slow deliberate cadence. (S3)
+徒弟	speaking with a young male voice, clear and inquisitive. (S4)
+师父	speaking with an elderly male voice, calm and knowing, with a slightly wry tone. (S5)
+二、分段规划
+2.1 分段原则
+原则	说明
+按场景合并	同一场景内连续内容，合并后总时长≤141帧就合并
+超141帧才拆	拆点选在场景切换处，不拆同一句话
+汉字数÷5	台词时长 = 汉字数 ÷ 5（标点不计）
+动作时间按需	不强行凑满，1-2秒足够
+2.2 时长上限
+项目	限制
+单段帧数	≤141帧（5.875秒）
+单段时长	≤5.875秒
+台词密度	汉字数÷5 ≤ 段时长
+三、每段提示词编写
+3.1 六段式结构
+每段严格按以下顺序书写，字段名不可改名、不可换序，六段主体为英文：
+
+text
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+3.2 subject_definitions
+只定义本段出场的实体。 每个出场实体一行完成绑定。
+
+会说话角色（只要本段出场，无论是否说话，都带音色和ID）：
+
+text
+<Subject N> is [角色] in <Picture N>, [视觉描述], speaking with [音色描述]. (Sx)
+不说话角色（只写视觉描述）：
+
+text
+<Subject N> is [实体] in <Picture N>, [视觉描述].
+无图片实体：
+
+text
+<Subject N> is [实体], [纯文本视觉描述].
+3.3 summary
+[reference generation] 前缀 + 本段剧情概述 + 说明主体来自参考图。
+
+3.4 retention_analysis
+逐主体写保留分析：
+
+text
+<Subject N> (appears in [Shot X], [Shot Y]): fully_preserved - [保留内容] are retained from <Picture N>.
+无图片实体写 retained as described in subject_definitions。
+
+3.5 detailed_description
+镜头编排规则：
+
+规则	说明
+谁说话镜头给谁	台词必须和说话人的镜头绑定
+说话前预备镜头	每段第一个说话镜头前，加0.3秒说话人独占、不说话的预备镜头
+预备镜头不占额外时间	与后续镜头共用段总时长
+同一段内后续台词不加预备镜头	只有每段第一个说话镜头需要
+说话人镜头写独占	Only [说话人] is in frame.
+段尾切镜	段尾最后0.3秒切到下一段需要的主体
+段尾切镜前提	该主体必须在本段已定义并出现
+段尾正向给镜头	不用“离开/消失/淡出”反向叙事
+时间戳格式：[Shot N] At 00:0X.XXX, [镜头描述].
+
+3.6 overall_soundscape
+1-4句描述环境声、物理动作声、非语言人声。不重复对白。
+
+3.7 non_diegetic_music
+无配乐写 N/A；有配乐用1-3句描述乐器、速度、节奏。
+
+四、段间衔接
+4.1 段尾切镜
+项目	规则
+切的位置	段尾最后0.3秒
+切的对象	下一段需要的主体
+切的前提	该主体在本段已定义并出现
+禁止	切太早、切到未定义主体、反向叙事
+4.2 连续性参数
+参数	设置
+continuityFromPrev	按需设置。上段已定义并出现本段开头主体时可设true；上段未出现则必须false
+continuityToNext	按需设置，不无脑全开
+注意	连续性参数控制段间重叠帧，不是用来解决段尾镜头对齐的
+五、JSON字段处理
+字段	处理方式
+totalFrames	不更新，保持原值
+runSelection	更新为新段索引
+videoWorkspaces	原样保留
+batchWorkspaces	原样保留
+segments	替换为新段
+output.continuityEnabled	按需设置
+每个segment的预览字段	保留（referenceVideo、_videoFrameCount、previewFps 等）
+global.refs	引用 shared_params/Picture*.png
+batchWorkspaces.r2v.globalCommon.refs	引用 shared_params/Picture*.png
+六、每段编写流程
+确定本段出场实体：角色、场景、道具、界面
+
+写 subject_definitions：
+
+会说话角色带 speaking with ... (Sx)，逐字复用全局音色
+
+不说话角色只写视觉描述
+
+无图片实体纯文本描述
+
+一行完成 <Subject N> is [实体] in <Picture N>, ... 绑定
+
+写 summary：[reference generation] + 剧情概述
+
+写 retention_analysis：逐主体保留分析
+
+写 detailed_description：
+
+第一个说话镜头前加0.3秒预备镜头
+
+谁说话镜头给谁，写 Only [说话人] is in frame.
+
+台词格式 <Subject N> (Sx) says: <d>[Chinese] 台词</d>
+
+段尾最后0.3秒切到下一段主体
+
+写 overall_soundscape：环境声、动作声，不重复对白
+
+写 non_diegetic_music：无配乐写 N/A
+
+检查：按检查清单逐条核对
+
+七、常见错误与修正
+错误	后果	修正
+本段说话角色缺失声音定义	台词被错误分配给其他角色	出场就带 speaking with ... (Sx)
+台词挂在其他角色镜头上	声画错配	谁说话镜头给谁
+段尾切镜太早	下一段说话人提前入画，声音错位	段尾最后0.3秒才切
+段尾切到未定义主体	凭空出现，模型混乱	该主体必须在本段已定义并出现
+用“离开/消失/淡出”清理段尾	注意力错误引向该主体	正向给镜头到下一段主体
+无脑全开 continuityToNext	帧数膨胀，硬切变重叠	按需设置
+先定义无来源角色再“derived from”	违反素材绑定规则	一行完成绑定
+场景图片隐藏描述中	场景不被当作参考	场景拥有独立 <Subject N>
+音色描述在不同段落不一致	跨段声音漂移	逐字复用
+<Subject N> 与 (Sx) 不对应	声音错乱	严格对应
+八、检查清单
+提示词结构
+□ 六段式字段名与顺序正确
+□ 六段主体为英文
+全局编号
+□ 会说话角色编号在前，按首次发声顺序
+□ 不说话角色编号在后
+□ <Subject N> 与 (Sx) 严格对应
+□ 全局编号固定，跨段复用
+□ 素材编号全局固定
+素材绑定
+□ 所有出场实体都有 <Subject N> 定义
+□ 有图片实体绑定 <Picture N>
+□ 无图片实体纯文本描述
+□ 场景图片有独立 <Subject N>
+□ 正面描述需保留特征
+声音定义
+□ 音色描述只在 subject_definitions 中
+□ 会说话角色出场就带 speaking with ... (Sx)
+□ 不说话角色不写音色
+□ 跨段音色描述逐字一致
+□ 本段说话角色都有完整声音定义
+对话格式
+□ 说话人ID在 <d> 标签外
+□ 格式为 <Subject N> (Sx) says: <d>...</d>
+□ <Subject N> (Sx) says 同时出现
+镜头
+□ 每段第一个说话镜头前有0.3秒预备镜头
+□ 谁说话镜头给谁
+□ 说话人镜头写 Only [说话人] is in frame.
+□ 段尾最后0.3秒才切镜
+□ 段尾切到的主体在本段已定义并出现
+□ 段尾正向给镜头
+时长
+□ 单段≤141帧
+□ 汉字数÷5 ≤ 段时长
+JSON字段
+□ totalFrames 未更新
+□ runSelection 已更新
+□ videoWorkspaces 原样保留
+□ batchWorkspaces 原样保留
+□ continuityToNext 按需设置
+其他
+□ non_diegetic_music 无配乐写 N/A
+□ 本段只定义实际出场的实体
+□ 禁止事项全部遵守
