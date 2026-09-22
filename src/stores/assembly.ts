@@ -21,6 +21,7 @@ import {
 } from '@/domain/frames'
 import { deriveFields, makeSeeders, composeSegmentText } from '@/domain/derive'
 import { reconcileGroups, segmentSourceHash } from '@/domain/cascade'
+import { langOf } from '@/domain/lang'
 import type {
   Assembly,
   AssemblyMode,
@@ -356,7 +357,9 @@ export const useAssemblyStore = defineStore('assembly', () => {
     schema: FieldSchema[]
   ): SegmentView[] {
     const byId = new Map(beats.map((b) => [b.id, b]))
-    const seeder = makeSeeders(entityById)
+    // ★ 必须带上语言：漏传会走 DEFAULT_LANG，实体名按英文词条取。
+    // 中文工作稿里只要有一个实体翻过 nameEn，派生字段就会中英混排。
+    const seeder = makeSeeders(entityById, langOf(settings))
 
     const rawGroups = assembly.groups
       .map((g) => ({

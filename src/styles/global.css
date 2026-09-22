@@ -22,11 +22,33 @@
   box-sizing: border-box;
 }
 
+/* ------------------------------------------------------------------ *
+ * 高度链 —— 动布局之前先读完这段
+ *
+ *   html / body / #app           height: 100%
+ *   #app 的直接子元素             页面自己写 height: 100%
+ *   main                          flex: 1 + min-height: 0 + overflow: hidden
+ *   面板内的滚动区                 .scroll-pane（自带 min-height: 0）
+ *
+ * 中间任何一层「高度由内容决定」的包裹元素，都会把这条链截断：
+ * CSS 规定百分比高度遇到 auto 高度的父级时退化为 auto，
+ * 于是上层再多的 overflow: hidden / min-height: 0 全部失效，
+ * 页面被内容撑高，最终变成 body 在滚 —— 表现是表头和左右两栏一起滚。
+ *
+ * 已知坑：naive-ui 的 n-config-provider 默认会渲染一层无高度的 div，
+ * 已在 App.vue 给它挂上 .app-root 并撑满（见下方规则）。
+ * 新增任何 provider / 布局包裹层时都要盯住这一点。
+ * ------------------------------------------------------------------ */
 html,
 body,
 #app {
   height: 100%;
   margin: 0;
+}
+
+/* ConfigProvider 渲染出来的那层 div，撑满才能把上面的高度链接下去 */
+.app-root {
+  height: 100%;
 }
 
 body {
@@ -316,8 +338,20 @@ body {
   box-shadow: var(--shadow);
 }
 
+/*
+ * 滚动面板。
+ *
+ * min-height: 0 是关键，不是可选项：flex 子项的自动最小尺寸默认等于内容高度，
+ * 所以「flex: 1 + overflow: auto」放在**纵向** flex 容器里时不会收缩，
+ * 会一直撑下去、撑破父级，最后被上层的 overflow: hidden 裁掉 ——
+ * 表现就是「内容显示不全、底部够不着、整页高度溢出」。
+ * 统一在这里兜住，凡是用 .scroll-pane 的地方都不用再单独写。
+ * min-width: 0 同理，管的是横向。
+ */
 .scroll-pane {
   overflow: auto;
+  min-height: 0;
+  min-width: 0;
 }
 
 .two-col {

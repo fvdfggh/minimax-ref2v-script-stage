@@ -293,6 +293,7 @@ async function clearAll() {
       style="
         width: 380px;
         flex: 0 0 380px;
+        min-height: 0;
         border-right: 1px solid var(--line);
         background: var(--panel);
         display: flex;
@@ -303,7 +304,14 @@ async function clearAll() {
         <span>故事原文</span>
         <n-button size="tiny" quaternary @click="saveStory">保存</n-button>
       </div>
-      <div style="flex: 1; padding: 12px; min-height: 0; display: flex">
+
+      <!--
+        下半区整体滚动（表头留在外面不跟着滚）。
+        textarea 用 min-height 兜底而不是 min-height: 0 —— 窗口变矮时先保住它的可读高度，
+        多出来的控制区和意见框靠这一层滚动够到，不会被外层 overflow: hidden 裁掉。
+      -->
+      <div class="scroll-pane" style="flex: 1; display: flex; flex-direction: column">
+      <div style="flex: 1; padding: 12px; min-height: 200px; display: flex">
         <n-input
           v-model:value="story"
           type="textarea"
@@ -378,21 +386,22 @@ async function clearAll() {
           }}
         </div>
       </div>
-      <div style="padding: 12px; border-top: 1px solid var(--line)">
-        <StageAdvice
-          stage="split"
-          :presets="[
-            '某些动作太长，帮我拆细',
-            '台词和动作应该完全分开',
-            '有片段绑错了场景或角色'
-          ]"
-          @applied="emit('changed')"
-        />
       </div>
+      <!-- /下半区滚动 -->
+
+      <StageAdvice
+        stage="split"
+        :presets="[
+          '某些动作太长，帮我拆细',
+          '台词和动作应该完全分开',
+          '有片段绑错了场景或角色'
+        ]"
+        @applied="emit('changed')"
+      />
     </div>
 
     <!-- 右：片段流水线 -->
-    <div style="flex: 1; min-width: 0; display: flex; flex-direction: column">
+    <div style="flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column">
       <div class="panel-head" style="border-radius: 0">
         <div class="row" style="gap: 10px">
           <span>分镜流水线</span>

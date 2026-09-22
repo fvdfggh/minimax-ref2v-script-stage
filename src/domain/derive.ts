@@ -69,7 +69,8 @@ export function deriveSubjectDefinitions(beats: Beat[], ctx: DeriveContext): str
 /* ---------------------- retention_analysis ---------------------- */
 
 export function deriveRetentionAnalysis(beats: Beat[], ctx: DeriveContext): string {
-  const seeder = ctx.seeder ?? makeSeeders(ctx.entityById)
+  // 兜底 seeder 也要跟随工作语言，别用 DEFAULT_LANG 悄悄定住
+  const seeder = ctx.seeder ?? makeSeeders(ctx.entityById, langOf(ctx.settings))
   const shotsOf = new Map<ID, number[]>()
 
   let shotNo = 0
@@ -106,7 +107,7 @@ export function deriveRetentionAnalysis(beats: Beat[], ctx: DeriveContext): stri
 /* --------------------- detailed_description --------------------- */
 
 export function deriveDetailedDescription(beats: Beat[], ctx: DeriveContext): string {
-  const seeder = ctx.seeder ?? makeSeeders(ctx.entityById)
+  const seeder = ctx.seeder ?? makeSeeders(ctx.entityById, langOf(ctx.settings))
   const lines: string[] = []
   let cursor = 0
   beats.forEach((b, i) => {

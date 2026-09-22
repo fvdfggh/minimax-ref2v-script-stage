@@ -15,11 +15,19 @@ export type { Lang }
  * 因此结构不可能被翻译改坏，校验规则也不必按语言分叉。
  * ------------------------------------------------------------------ */
 
-/** 兜底语言：字段缺失时按英文处理，保证老数据行为不变 */
-export const DEFAULT_LANG: Lang = 'en'
+/**
+ * 兜底语言。
+ *
+ * ★ 必须与 ProjectSettings.workLanguage 的默认值（DEFAULT_SETTINGS.workLanguage = 'zh'）一致。
+ * 这两处一旦不一致，就会出现最难查的一类问题：
+ * 在语言字段还没写进库的项目上，「缺字段」被兜成 en，
+ * 于是中文工作稿在阶段①~④ 就满屏报「必须为英文」—— 本地化还没做，校验先炸了。
+ */
+export const DEFAULT_LANG: Lang = 'zh'
 
+/** 只认显式的 'en'，其余（缺失 / 非法值）一律按默认工作语言处理 */
 export function normalizeLang(v: unknown): Lang {
-  return v === 'zh' ? 'zh' : 'en'
+  return v === 'en' ? 'en' : DEFAULT_LANG
 }
 
 export function isZh(lang: Lang | undefined): boolean {

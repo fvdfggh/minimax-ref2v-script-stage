@@ -113,6 +113,19 @@ function str(v: unknown): string | undefined {
   return s || undefined
 }
 
+/**
+ * 补丁文本的三种状态：
+ *   undefined / "" → 不改（"" 是兜底：模型想"填满模板"时会留空串，不能当成清空）
+ *   null           → 清空
+ *   有值           → 改成这个值
+ */
+function textPatch(v: unknown): string | null | undefined {
+  if (v === null) return null
+  if (v === undefined) return undefined
+  const s = String(v).trim()
+  return s || undefined
+}
+
 function num(v: unknown): number | undefined {
   const n = Number(v)
   return Number.isFinite(n) ? Math.round(n) : undefined
@@ -121,8 +134,12 @@ function num(v: unknown): number | undefined {
 /**
  * 清洗模型返回的补丁：丢掉 op 非法、定位缺失、内容全空的条目。
  * 宁可少应用几条，也不要让半截补丁写进库。
+ *
+ * ★ 这里也是「部分补丁」的安全闸门：
+ *   模型即使把模板填满、每个字段都回一个 ""，也会被归一成「不改」，
+ *   不会把整个片段的内容洗成空。
  */
-function normalizeAdvice(raw: StageAdvice | undefined): StageAdvice {
+export function normalizeAdvice(raw: StageAdvice | undefined): StageAdvice {
   const src = raw ?? {}
 
   const beats: AdviceBeatPatch[] = []
@@ -135,20 +152,20 @@ function normalizeAdvice(raw: StageAdvice | undefined): StageAdvice {
       op,
       index,
       afterIndex: num(p?.afterIndex),
-      title: str(p?.title),
+      title: textPatch(p?.title),
       kind: str(p?.kind),
-      dialogue: p?.dialogue == null ? undefined : String(p.dialogue),
-      direction: str(p?.direction),
-      visualDesc: str(p?.visualDesc),
-      scene: str(p?.scene),
+      dialogue: textPatch(p?.dialogue),
+      direction: textPatch(p?.direction),
+      visualDesc: textPatch(p?.visualDesc),
+      scene: textPatch(p?.scene),
       entities: Array.isArray(p?.entities)
         ? p.entities.map((x) => String(x).trim()).filter(Boolean)
         : undefined,
-      speaker: str(p?.speaker),
-      focus: str(p?.focus),
-      titleEn: str(p?.titleEn),
-      directionEn: str(p?.directionEn),
-      visualDescEn: str(p?.visualDescEn),
+      speaker: textPatch(p?.speaker),
+      focus: textPatch(p?.focus),
+      titleEn: textPatch(p?.titleEn),
+      directionEn: textPatch(p?.directionEn),
+      visualDescEn: textPatch(p?.visualDescEn),
       reason: str(p?.reason)
     }
     const touched = [
@@ -180,11 +197,11 @@ function normalizeAdvice(raw: StageAdvice | undefined): StageAdvice {
       name,
       type: ENTITY_TYPES.has(String(p?.type)) ? str(p?.type) : undefined,
       kind: kind === 'speaking' || kind === 'non_speaking' ? kind : undefined,
-      voiceDesc: str(p?.voiceDesc),
-      textDesc: str(p?.textDesc),
-      nameEn: str(p?.nameEn),
-      voiceDescEn: str(p?.voiceDescEn),
-      textDescEn: str(p?.textDescEn),
+      voiceDesc: textPatch(p?.voiceDesc),
+      textDesc: textPatch(p?.textDesc),
+      nameEn: textPatch(p?.nameEn),
+      voiceDescEn: textPatch(p?.voiceDescEn),
+      textDescEn: textPatch(p?.textDescEn),
       reason: str(p?.reason)
     })
   }

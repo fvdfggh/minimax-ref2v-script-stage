@@ -11,7 +11,19 @@ export const useProjectStore = defineStore('project', () => {
   const loading = ref(false)
 
   const current = computed(() => projects.value.find((p) => p.id === currentId.value) ?? null)
-  const settings = computed<ProjectSettings>(() => current.value?.settings ?? DEFAULT_SETTINGS)
+
+  /**
+   * ★ 存的 settings 必须与默认值合并后再用，不能直接取。
+   *
+   * 新加的设置项在老项目上是不存在的（库里存的是当时那份完整对象）。
+   * 直接取用的话字段是 undefined，再被下游兜底成某个值 ——
+   * workLanguage 就是这么被兜成 'en' 的：功能上线前建的项目，
+   * 一打开就在中文工作稿上跑英文校验。
+   */
+  const settings = computed<ProjectSettings>(() => ({
+    ...DEFAULT_SETTINGS,
+    ...(current.value?.settings ?? {})
+  }))
   const fieldSchema = computed<FieldSchema[]>(() =>
     [...(current.value?.fieldSchema ?? DEFAULT_FIELD_SCHEMA)].sort((a, b) => a.order - b.order)
   )
@@ -62,7 +74,8 @@ export const useProjectStore = defineStore('project', () => {
 
   async function updateSettings(changes: Partial<ProjectSettings>) {
     if (!current.value) return
-    const next = { ...current.value.settings, ...changes }
+    // 基于合并后的 settings 写回，顺手把老项目缺的键补齐
+    const next = { ...settings.value, ...changes }
     await patch(current.value.id, { settings: next })
   }
 

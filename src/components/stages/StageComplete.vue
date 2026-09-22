@@ -226,13 +226,11 @@ function segLabel(index: number) {
       </div>
     </div>
 
-    <div style="padding: 12px 16px 0">
-      <StageAdvice
-        stage="complete"
-        scope="segments"
-        :presets="['summary 不要重复台词原文', '某段的配乐不合适', '某段的环境声写太空了']"
-      />
-    </div>
+    <StageAdvice
+      stage="complete"
+      scope="segments"
+      :presets="['summary 不要重复台词原文', '某段的配乐不合适', '某段的环境声写太空了']"
+    />
 
     <div class="scroll-pane" style="flex: 1; padding: 16px">
       <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">

@@ -540,12 +540,10 @@ function fieldLabel(key: string): string {
         </div>
       </div>
 
-      <div style="margin-bottom: 12px">
-        <StageAdvice
-          stage="localize"
-          :presets="['某个角色的译名不合适', '英文太啰嗦，压短一点', '音色描述要统一说法']"
-        />
-      </div>
+      <StageAdvice
+        stage="localize"
+        :presets="['某个角色的译名不合适', '英文太啰嗦，压短一点', '音色描述要统一说法']"
+      />
 
       <!-- ② 段字段 -->
       <div class="panel" style="padding: 12px 14px">

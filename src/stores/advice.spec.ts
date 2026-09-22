@@ -10,6 +10,7 @@ import { useRegistryStore } from './registry'
 import { useBeatStore } from './beats'
 import { useAssemblyStore } from './assembly'
 import { useAdviceStore } from './advice'
+import { normalizeAdvice } from './pipeline'
 
 const DRAFTS = [
   { title: 'a 洞窟', kind: 'establishing' as const },
@@ -328,11 +329,178 @@ describe('意见补丁：应用与级联', () => {
     for (const b of s.beats.ordered) expect(assigned.has(b.id)).toBe(true)
   })
 
+  /* ---------------- 部分补丁：只改点到的字段 ---------------- */
+
+  it('★ 只传 speaker 时，已有的其他主体不能被冲掉', async () => {
+    const s = await seed()
+    const prop = await s.registry.addEntity(s.project.currentId!, { name: '青霜剑', type: 'prop' })
+    const dialogue = s.beats.ordered[2] // c 台词
+    await s.beats.updateBeat(dialogue.id, {
+      entities: [s.heroId, prop.id],
+      speakerId: s.heroId
+    })
+
+    await s.advice.apply({ beats: [{ op: 'update', index: 3, speaker: '楚辞' }] }, s.groupIds())
+
+    const b = s.beats.ordered[2]
+    expect(b.speakerId).toBe(s.heroId)
+    expect(b.entities).toContain(s.heroId)
+    // 修复前这里会把「青霜剑」一起冲掉
+    expect(b.entities).toContain(prop.id)
+  })
+
+  it('★ 只传 scene 时，标题 / 台词 / 运镜 / 画面全部原样保留', async () => {
+    const s = await seed()
+    const id = s.beats.ordered[2].id
+    await s.beats.updateBeat(id, { direction: '中景推近', visualDesc: '火光跳动' })
+    const scene = await s.registry.addEntity(s.project.currentId!, { name: '新场景', type: 'scene' })
+
+    await s.advice.apply({ beats: [{ op: 'update', index: 3, scene: '新场景' }] }, s.groupIds())
+
+    const b = s.beats.ordered[2]
+    expect(b.sceneId).toBe(scene.id)
+    expect(b.title).toBe('c 台词')
+    expect(b.dialogue).toBe('我不信。')
+    expect(b.direction).toBe('中景推近')
+    expect(b.visualDesc).toBe('火光跳动')
+  })
+
+  it('★ 显式 null 表示清空字段', async () => {
+    const s = await seed()
+    const id = s.beats.ordered[2].id
+    await s.beats.updateBeat(id, { direction: '中景推近' })
+
+    await s.advice.apply({ beats: [{ op: 'update', index: 3, direction: null }] }, s.groupIds())
+
+    expect(s.beats.ordered[2].direction).toBeUndefined()
+  })
+
+  it('只传 focus 不影响场景与主体绑定', async () => {
+    const s = await seed()
+    const b0 = s.beats.ordered[2]
+    await s.beats.updateBeat(b0.id, {
+      entities: [s.heroId],
+      speakerId: s.heroId,
+      sceneId: s.caveId
+    })
+
+    await s.advice.apply({ beats: [{ op: 'update', index: 3, focus: '楚辞' }] }, s.groupIds())
+
+    const b = s.beats.ordered[2]
+    expect(b.focusEntityId).toBe(s.heroId)
+    expect(b.sceneId).toBe(s.caveId)
+    expect(b.entities).toEqual([s.heroId])
+    expect(b.speakerId).toBe(s.heroId)
+  })
+
   it('空补丁不产生任何变更，也不报错', async () => {
     const s = await seed()
     const before = s.beats.ordered.map((b) => b.title).join('|')
     const res = await s.advice.apply({}, s.groupIds())
     expect(res.beats.updated).toBe(0)
     expect(s.beats.ordered.map((b) => b.title).join('|')).toBe(before)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 模型补丁清洗 —— 「部分补丁」的安全闸门
+ *
+ * 模型有可能不听话，把模板里所有字段都回一遍。这里必须保证：
+ * 空串被当成「不改」，绝不等于「清空」，否则一次改动会把整个片段洗白。
+ * ------------------------------------------------------------------ */
+
+describe('模型补丁清洗', () => {
+  it('★ 每个字段都回空串时，整条补丁被丢弃（而不是把所有字段清空）', () => {
+    const out = normalizeAdvice({
+      beats: [
+        {
+          op: 'update',
+          index: 3,
+          title: '',
+          dialogue: '',
+          direction: '',
+          visualDesc: '',
+          scene: '',
+          speaker: '',
+          focus: '',
+          entities: undefined,
+          reason: ''
+        }
+      ]
+    })
+    expect(out.beats).toHaveLength(0)
+  })
+
+  it('★ 只带 scene 的补丁，不会凭空带上别的字段', () => {
+    const out = normalizeAdvice({
+      beats: [{ op: 'update', index: 3, scene: '九幽毒渊', reason: '原本绑错了场景' }]
+    })
+    expect(out.beats).toHaveLength(1)
+    const p = out.beats![0]
+    expect(p.scene).toBe('九幽毒渊')
+    expect(p.title).toBeUndefined()
+    expect(p.direction).toBeUndefined()
+    expect(p.visualDesc).toBeUndefined()
+    expect(p.entities).toBeUndefined()
+    expect(p.speaker).toBeUndefined()
+    expect(p.focus).toBeUndefined()
+    expect(p.dialogue).toBeUndefined()
+  })
+
+  it('null 保留为 null（清空），空串归一成 undefined（不改）', () => {
+    const out = normalizeAdvice({
+      beats: [{ op: 'update', index: 3, direction: null, visualDesc: '' }]
+    })
+    expect(out.beats).toHaveLength(1)
+    expect(out.beats![0].direction).toBeNull()
+    expect(out.beats![0].visualDesc).toBeUndefined()
+  })
+
+  it('只传 speaker 的补丁不会带上 entities（交由应用层合并，而不是整份替换）', () => {
+    const out = normalizeAdvice({ beats: [{ op: 'update', index: 3, speaker: '毒尊' }] })
+    expect(out.beats![0].speaker).toBe('毒尊')
+    expect(out.beats![0].entities).toBeUndefined()
+  })
+
+  it('实体补丁同样是部分的', () => {
+    const out = normalizeAdvice({ entities: [{ op: 'update', name: '楚辞', voiceDesc: '改过的音色' }] })
+    expect(out.entities).toHaveLength(1)
+    expect(out.entities![0].voiceDesc).toBe('改过的音色')
+    expect(out.entities![0].textDesc).toBeUndefined()
+    expect(out.entities![0].nameEn).toBeUndefined()
+  })
+
+  it('op 非法 / 序号缺失 / 序号为 0 的片段补丁被丢弃', () => {
+    const out = normalizeAdvice({
+      beats: [
+        { op: 'patch' as never, index: 1, title: 'x' },
+        { op: 'update', title: 'x' },
+        { op: 'update', index: 0, title: 'x' }
+      ]
+    })
+    expect(out.beats).toHaveLength(0)
+  })
+
+  it('insert 必须带 title，否则丢弃', () => {
+    expect(normalizeAdvice({ beats: [{ op: 'insert', afterIndex: 0 }] }).beats).toHaveLength(0)
+    expect(
+      normalizeAdvice({ beats: [{ op: 'insert', afterIndex: 0, title: '新镜头' }] }).beats
+    ).toHaveLength(1)
+  })
+
+  it('分组与段字段补丁的必填项缺失时被丢弃', () => {
+    const out = normalizeAdvice({
+      groups: [
+        { op: 'split' },
+        { op: 'merge', fromSegment: 2 },
+        { op: 'refPrev' },
+        { op: 'split', atBeatIndex: 7 }
+      ],
+      fields: [{ segment: 0, key: 'summary', value: 'x' }, { segment: 2, key: 'summary', value: 'y' }]
+    })
+    expect(out.groups).toHaveLength(1)
+    expect(out.groups![0].atBeatIndex).toBe(7)
+    expect(out.fields).toHaveLength(1)
+    expect(out.fields![0].segment).toBe(2)
   })
 })

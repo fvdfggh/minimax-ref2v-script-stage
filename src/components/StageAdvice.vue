@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NAlert, NButton, NCheckbox, NInput, NModal, NTag, useMessage } from 'naive-ui'
+import {
+  NAlert,
+  NButton,
+  NCheckbox,
+  NDrawer,
+  NDrawerContent,
+  NInput,
+  NModal,
+  useMessage
+} from 'naive-ui'
 import { useAdviceStore } from '@/stores/advice'
 import { useAssemblyStore } from '@/stores/assembly'
 import { useBeatStore } from '@/stores/beats'
@@ -38,6 +47,9 @@ const provider = useProviderStore()
 const message = useMessage()
 
 const request = ref('')
+/** 意见抽屉是否展开 */
+const panelOpen = ref(false)
+/** 改动审查弹窗是否展开 */
 const open = ref(false)
 const busy = ref(false)
 const result = ref<StageAdvice | null>(null)
@@ -98,12 +110,21 @@ function entityOf(name: string): Entity | undefined {
   return registry.entities.find((e) => e.name === name)
 }
 
-function diff(label: string, before: string | undefined, after: string | undefined) {
+/**
+ * 只渲染真正会变的字段。
+ * after === null 表示「清空」，显示成（清空）；
+ * after === undefined 表示「不改」，此时 after 收敛成 '' 与 before 相等，会被过滤掉。
+ */
+function diff(
+  label: string,
+  before: string | null | undefined,
+  after: string | null | undefined
+) {
   const b = (before ?? '').trim()
   const a = (after ?? '').trim()
   if (a === '' && b === '') return null
   if (b === a) return null
-  return { label, before: b || '（空）', after: a || '（清空）' }
+  return { label, before: b || '（空）', after: after === null ? '（清空）' : a || '（空）' }
 }
 
 const rows = computed<ChangeRow[]>(() => {
@@ -222,6 +243,8 @@ async function ask() {
     result.value = res
     // 默认全选"确实会改东西"的条目
     picked.value = new Set(rows.value.filter((r) => r.changes.length > 0 || r.kind === '分段').map((r) => r.key))
+    // 抽屉让位给审查弹窗，免得两层浮层叠在一起
+    panelOpen.value = false
     open.value = true
   } catch (e) {
     message.error((e as Error).message)
@@ -307,50 +330,80 @@ async function confirm() {
 </script>
 
 <template>
-  <div class="panel" style="padding: 10px 12px">
-    <div class="row-between" style="gap: 10px; margin-bottom: 8px">
-      <div class="row" style="gap: 8px">
-        <span style="font-weight: 600; font-size: 13px">提意见</span>
-        <span class="muted" style="font-size: 12px">
-          {{ ADVICE_STAGE_LABEL[stage] }} · 模型只出补丁，你确认后才改
-        </span>
-      </div>
-    </div>
+  <!--
+    外壳本身不占布局：入口是 fixed 悬浮按钮，抽屉/弹窗都走 Teleport。
+    所以放在页面哪个位置都行，各阶段不用再为它留版面。
+  -->
+  <div>
+    <button
+      class="advice-fab"
+      type="button"
+      :title="`${ADVICE_STAGE_LABEL[stage]} · 提意见`"
+      @click="panelOpen = true"
+    >
+      <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.4H8l-4.5 3v-6.6A8.4 8.4 0 0 1 12 3.1a8.4 8.4 0 0 1 9 8.4Z" />
+      </svg>
+      提意见
+      <span v-if="report.length" class="advice-fab-dot" />
+    </button>
 
-    <div class="row" style="gap: 8px; align-items: flex-end">
-      <n-input
-        v-model:value="request"
-        type="textarea"
-        :rows="2"
-        style="flex: 1"
-        :placeholder="placeholder ?? '例如：第 3 到第 5 个片段其实是连续的一个长动作，帮我拆细一点'"
-        @keydown.ctrl.enter="ask"
-      />
-      <n-button
-        type="primary"
-        :loading="busy || pipeline.running"
-        :disabled="!provider.ready"
-        @click="ask"
-      >
-        分析
-      </n-button>
-    </div>
+    <n-drawer v-model:show="panelOpen" :width="440" placement="right">
+      <n-drawer-content closable>
+        <template #header>提意见</template>
 
-    <div v-if="presets?.length" class="row" style="gap: 6px; margin-top: 8px; flex-wrap: wrap">
-      <button
-        v-for="(p, i) in presets"
-        :key="i"
-        class="tag-chip"
-        style="border: 1px solid var(--line); cursor: pointer; background: #fff; color: #5b6273"
-        @click="request = p"
-      >
-        {{ p }}
-      </button>
-    </div>
+        <div class="stack" style="gap: 12px">
+          <div class="muted" style="font-size: 12.5px; line-height: 1.75">
+            {{ ADVICE_STAGE_LABEL[stage] }} · 模型只负责判断「哪些对象要改、改成什么」，
+            输出结构化补丁；你逐条确认之后才会写进库。
+          </div>
 
-    <div v-if="report.length" class="stack" style="gap: 4px; margin-top: 10px">
-      <div v-for="(line, i) in report" :key="i" class="issue info">{{ line }}</div>
-    </div>
+          <n-input
+            v-model:value="request"
+            type="textarea"
+            :rows="7"
+            :placeholder="
+              placeholder ?? '例如：第 3 到第 5 个片段其实是连续的一个长动作，帮我拆细一点'
+            "
+            @keydown.ctrl.enter="ask"
+          />
+
+          <div v-if="presets?.length" class="stack" style="gap: 6px">
+            <div class="muted" style="font-size: 12px">常用说法</div>
+            <div class="row" style="gap: 6px; flex-wrap: wrap; align-items: flex-start">
+              <button
+                v-for="(p, i) in presets"
+                :key="i"
+                class="advice-preset"
+                type="button"
+                @click="request = p"
+              >
+                {{ p }}
+              </button>
+            </div>
+          </div>
+
+          <n-button
+            type="primary"
+            block
+            :loading="busy || pipeline.running"
+            :disabled="!provider.ready"
+            @click="ask"
+          >
+            {{ pipeline.running ? pipeline.progress : '分析' }}
+          </n-button>
+
+          <n-alert v-if="!provider.ready" type="warning" :bordered="false">
+            还没配置模型供应商，先去右上角「模型设置」。
+          </n-alert>
+
+          <div v-if="report.length" class="stack" style="gap: 4px">
+            <div class="muted" style="font-size: 12px">上次应用的结果</div>
+            <div v-for="(line, i) in report" :key="i" class="issue info">{{ line }}</div>
+          </div>
+        </div>
+      </n-drawer-content>
+    </n-drawer>
 
     <n-modal v-model:show="open" preset="card" title="确认改动" style="max-width: 880px">
       <n-alert v-if="result?.summary" type="info" :bordered="false" style="margin-bottom: 10px">
@@ -452,9 +505,75 @@ async function confirm() {
         </div>
       </template>
     </n-modal>
-
-    <n-tag v-if="pipeline.running" size="small" :bordered="false" style="margin-top: 8px">
-      {{ pipeline.progress }}
-    </n-tag>
   </div>
 </template>
+
+<style scoped>
+/*
+ * 悬浮入口：固定在右下角。
+ * z-index 给 1500 —— 高于页面内的任何面板，低于 naive-ui 的浮层（2000 起），
+ * 这样它不会被右侧滚动区盖住而点不到，也不会盖住抽屉和弹窗。
+ * 这里刻意不写 :disabled 样式：这个入口永远可点，供应商没配好时
+ * 在抽屉里提示，而不是把功能整个藏起来。
+ */
+.advice-fab {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 1500;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 10px 16px;
+  border: none;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+  box-shadow: 0 6px 18px rgba(59, 110, 245, 0.34);
+  transition: transform 0.15s, box-shadow 0.15s, opacity 0.15s;
+}
+
+.advice-fab:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 9px 24px rgba(59, 110, 245, 0.42);
+}
+
+.advice-fab:active {
+  transform: translateY(0);
+}
+
+/* 有上次结果时点一个小圆点，提示"抽屉里还有东西" */
+.advice-fab-dot {
+  position: absolute;
+  top: 5px;
+  right: 7px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.advice-preset {
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--panel);
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 18px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+
+.advice-preset:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+</style>

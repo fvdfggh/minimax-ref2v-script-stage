@@ -37,26 +37,33 @@ const STAGE_DUTY: Record<AdviceStage, string> = {
 
 /* --------------------------- 补丁结构 --------------------------- */
 
+/**
+ * 补丁一律是「部分」的：
+ *   字段不出现 = 不改（默认）
+ *   字段为 null = 清空
+ *   字段有值   = 改成这个值
+ * 所以模型只该返回真正要改的那几个字段，不要把整个对象抄一遍。
+ */
 export interface AdviceBeatPatch {
   op: 'update' | 'insert' | 'delete'
   /** 片段序号，1 起，对应下方清单里的编号。update / delete 必填 */
   index?: number
   /** insert：插在这个序号之后；0 表示插到最前面 */
   afterIndex?: number
-  title?: string
+  title?: string | null
   kind?: string
-  dialogue?: string
-  direction?: string
-  visualDesc?: string
-  /** 下面几项填实体「名称」，不是 id */
-  scene?: string
+  dialogue?: string | null
+  direction?: string | null
+  visualDesc?: string | null
+  /** 下面几项填实体「名称」，不是 id；null 表示解绑 */
+  scene?: string | null
   entities?: string[]
-  speaker?: string
-  focus?: string
+  speaker?: string | null
+  focus?: string | null
   /** 本地化阶段用：英文词条 */
-  titleEn?: string
-  directionEn?: string
-  visualDescEn?: string
+  titleEn?: string | null
+  directionEn?: string | null
+  visualDescEn?: string | null
   reason?: string
 }
 
@@ -66,11 +73,11 @@ export interface AdviceEntityPatch {
   name: string
   type?: string
   kind?: 'speaking' | 'non_speaking'
-  voiceDesc?: string
-  textDesc?: string
-  nameEn?: string
-  voiceDescEn?: string
-  textDescEn?: string
+  voiceDesc?: string | null
+  textDesc?: string | null
+  nameEn?: string | null
+  voiceDescEn?: string | null
+  textDescEn?: string | null
   reason?: string
 }
 
@@ -196,61 +203,6 @@ export function buildAdviceMessages(input: AdviceInput): ChatMessage[] {
     segments: '只改段字段内容，不要动片段与分组'
   }
 
-  const jsonShape = JSON.stringify(
-    {
-      summary: '一句话说明你打算怎么改',
-      entities: [
-        {
-          op: 'update|insert|delete',
-          name: '实体名（定位用）',
-          type: 'character|scene|prop|ui|other',
-          kind: 'speaking|non_speaking',
-          voiceDesc: '',
-          textDesc: '',
-          nameEn: '仅本地化阶段',
-          voiceDescEn: '仅本地化阶段',
-          textDescEn: '仅本地化阶段',
-          reason: '为什么改'
-        }
-      ],
-      beats: [
-        {
-          op: 'update|insert|delete',
-          index: 3,
-          afterIndex: 3,
-          title: '',
-          kind: 'dialogue|action|scene_switch|establishing|reaction|insert',
-          dialogue: '',
-          direction: '',
-          visualDesc: '',
-          scene: '场景实体名',
-          entities: ['主体实体名'],
-          speaker: '说话人实体名',
-          focus: '聚焦主体实体名',
-          titleEn: '仅本地化阶段',
-          directionEn: '仅本地化阶段',
-          visualDescEn: '仅本地化阶段',
-          reason: '为什么改'
-        }
-      ],
-      groups: [
-        {
-          op: 'split|merge|refPrev',
-          atBeatIndex: 7,
-          fromSegment: 2,
-          toSegment: 3,
-          segment: 1,
-          refPrev: true,
-          reason: '为什么改'
-        }
-      ],
-      fields: [{ segment: 1, key: 'non_diegetic_music', value: 'N/A', reason: '为什么改' }],
-      notes: '补丁表达不了、需要人工处理的事'
-    },
-    null,
-    2
-  )
-
   return [
     {
       role: 'system',
@@ -264,22 +216,62 @@ export function buildAdviceMessages(input: AdviceInput): ChatMessage[] {
 
 硬性要求：
 1. 只输出补丁，不要输出整份改写后的内容。没被点到的对象一律不要出现在补丁里。
-2. 定位一律用清单里的「序号」或「名称」，不要编造 id。
+2. ★★ 补丁是「部分」的 —— 只输出你要改的那几个字段，其余字段一律不要写进 JSON。
+   - 字段不出现 = 不改，这是默认行为，**不要为了"填满模板"而把整个对象抄一遍**；
+   - 关键：如果你只改场景，就只返回 scene，不要带 title / direction / visualDesc；
+     如果只改说话人，就只返回 speaker，不要带 entities。
+     带不相关内容会被当成"你确实想改它"，风险很大。
+   - 想清空某个字段，显式写 null（例："direction": null），不要写空字符串。
+3. 定位一律用清单里的「序号」或「名称」，不要编造 id。
    - 片段序号是 1 起，对应全片清单里的编号；
    - 插入用 afterIndex 表示"插在这个序号之后"，0 表示插到最前面。
-3. 每条补丁都必须写 reason，一句话说清为什么改。
-4. 只改必须改的。不要顺手润色、不要重排顺序、不要改风格、不要补充用户没提的内容。
-5. 台词（dialogue）是纯台词本身，不要加角色名、引号、<d> 标签或任何格式标记。
-6. 实体名必须与「实体清单」里已有名称或你在 entities 里新增的名称完全一致。
-7. 如果本次要「增删片段」或「调整分段边界」，就不要输出 fields ——
+4. 每条补丁都必须写 reason，一句话说清为什么改。
+5. 只改必须改的。不要顺手润色、不要重排顺序、不要改风格、不要补充用户没提的内容。
+6. 台词（dialogue）是纯台词本身，不要加角色名、引号、<d> 标签或任何格式标记。
+7. 实体名必须与「实体清单」里已有名称或你在 entities 里新增的名称完全一致。
+8. 如果本次要「增删片段」或「调整分段边界」，就不要输出 fields ——
    段号是按当前结构算的，结构一变就失效，系统会让受影响的段重新生成。
    只改片段内容（标题 / 运镜 / 画面 / 台词）不影响段号，可以照常输出 fields。
-8. 如果用户的诉求靠补丁表达不了（例如需要人工重新讲故事），写进 notes，不要硬改。
-9. 如果用户的意见本身有歧义、或者你判断不需要改动，输出空的补丁数组并把原因写进 summary。
-10. 输出必须是合法 JSON，不要输出解释文字或 Markdown 代码块标记。
+9. 如果用户的诉求靠补丁表达不了（例如需要人工重新讲故事），写进 notes，不要硬改。
+10. 如果用户的意见本身有歧义、或者你判断不需要改动，输出空的补丁数组并把原因写进 summary。
+11. 输出必须是合法 JSON，不要输出解释文字或 Markdown 代码块标记。
 
-输出 JSON 结构：
-${jsonShape}`
+可用的字段名（这是词表，不是让你填满的模板）：
+  summary    一句话说明你打算怎么改（可选）
+  beats[]    片段补丁
+             op          必填：update | insert | delete
+             index       片段序号，1 起；update / delete 必填
+             afterIndex  仅 insert：插在这个序号之后，0 = 插到最前面
+             可改字段    title / kind / dialogue / direction / visualDesc /
+                         scene / entities / speaker / focus /
+                         titleEn / directionEn / visualDescEn
+  entities[] 实体补丁
+             op          必填：update | insert | delete
+             name        必填，用名称定位；insert 时是新实体的名字
+             可改字段    type / kind / voiceDesc / textDesc /
+                         nameEn / voiceDescEn / textDescEn
+  groups[]   分段补丁
+             op          必填：split | merge | refPrev
+             split  →    atBeatIndex（在第 N 个片段之前切）
+             merge  →    fromSegment, toSegment
+             refPrev →   segment, refPrev
+  fields[]   段字段补丁
+             segment     段号，1 起
+             key         字段名
+             value       新内容
+  notes      补丁表达不了、需要人工处理的事（可选）
+
+每条补丁还可以带 reason（一句话说明为什么改）。
+
+最小示例 —— 只把第 3 个片段的场景换掉、再删掉第 5 个片段：
+{
+  "summary": "第 3 个片段的场景绑错了，第 5 个片段与第 4 个重复",
+  "beats": [
+    { "op": "update", "index": 3, "scene": "九幽毒渊", "reason": "原本绑错了场景" },
+    { "op": "delete", "index": 5, "reason": "与第 4 个片段重复" }
+  ]
+}
+注意这个例子里**没有**出现 title / direction / entities —— 因为不需要改它们。`
     },
     {
       role: 'user',

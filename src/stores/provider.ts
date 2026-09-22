@@ -5,9 +5,21 @@ import { uid, now } from '@/core/id'
 import { chat, chatJson, extractJson, listModels } from '@/core/llm/openai'
 import type { Provider } from '@/domain/types'
 
-const SESSION_KEY_STORE = new Map<string, string>()
-
 export const useProviderStore = defineStore('provider', () => {
+  /**
+   * 「仅本次会话使用 Key」的明文 Key 只留在内存里，不落库。
+   *
+   * 用 ref（而不是裸 Map）是有意为之：provider.ready 依赖它，
+   * 裸 Map 不可响应，Key 从无到有时 ready 不会重算 ——
+   * 表现就是勾了「仅本次会话」之后，Key 明明填好了，按钮却一直是灰的、点不动。
+   *
+   * ★ 放在 store 内部而不是模块级：模块级状态是跨 pinia 实例的隐藏全局。
+   * 刷新页面在真实浏览器里会重载模块、Key 自然丢失，但在测试或任何重建 pinia
+   * 的场景下不会 —— 于是「刷新后会话 Key 真的丢了」这条最要紧的保证无法被验证。
+   * store 的生命周期就等于「这一次会话」，语义也更准。
+   */
+  const sessionKeys = ref<Record<string, string>>({})
+
   const providers = ref<Provider[]>([])
   const currentId = ref<string | null>(null)
   const busy = ref(false)
@@ -15,8 +27,22 @@ export const useProviderStore = defineStore('provider', () => {
   const lastUsage = ref<{ prompt: number; completion: number; total: number } | null>(null)
 
   const current = computed(() => providers.value.find((p) => p.id === currentId.value) ?? null)
-  const ready = computed(() => {
+
+  /** 取实际可用的 Provider（含仅会话保存的 Key） */
+  function resolved(): Provider | null {
     const p = current.value
+    if (!p) return null
+    const sessionKey = sessionKeys.value[p.id]
+    return sessionKey ? { ...p, apiKey: sessionKey } : p
+  }
+
+  /**
+   * ★ 必须用 resolved()，不能用 current.value。
+   * 会话 Key 不落库，库里的 apiKey 是空串；
+   * 用 current 判断会让「能正常调模型」和「按钮全灰」同时成立，非常难查。
+   */
+  const ready = computed(() => {
+    const p = resolved()
     return !!p && !!p.baseUrl && !!p.apiKey && !!p.model
   })
 
@@ -57,7 +83,7 @@ export const useProviderStore = defineStore('provider', () => {
       : provider
     await saveOne(db.providers, persisted)
     if (provider.sessionOnly && provider.apiKey) {
-      SESSION_KEY_STORE.set(provider.id, provider.apiKey)
+      sessionKeys.value = { ...sessionKeys.value, [provider.id]: provider.apiKey }
     }
   }
 
@@ -73,7 +99,9 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function remove(id: string) {
     await db.providers.delete(id)
-    SESSION_KEY_STORE.delete(id)
+    const next = { ...sessionKeys.value }
+    delete next[id]
+    sessionKeys.value = next
     providers.value = providers.value.filter((p) => p.id !== id)
     if (currentId.value === id) currentId.value = providers.value[0]?.id ?? null
   }
@@ -81,14 +109,6 @@ export const useProviderStore = defineStore('provider', () => {
   async function select(id: string | null) {
     currentId.value = id
     await kvSet('currentProviderId', id)
-  }
-
-  /** 取实际可用的 Provider（含仅会话保存的 Key） */
-  function resolved(): Provider | null {
-    const p = current.value
-    if (!p) return null
-    const sessionKey = SESSION_KEY_STORE.get(p.id)
-    return sessionKey ? { ...p, apiKey: sessionKey } : p
   }
 
   async function probeModels(): Promise<string[]> {

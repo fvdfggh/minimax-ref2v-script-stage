@@ -370,6 +370,7 @@ function moveSchema(idx: number, dir: -1 | 1) {
         style="
           width: 220px;
           flex: 0 0 220px;
+          min-height: 0;
           border-right: 1px solid var(--line);
           background: var(--panel);
           overflow: auto;
@@ -414,14 +415,8 @@ function moveSchema(idx: number, dir: -1 | 1) {
       </div>
 
       <!-- 字段编辑 -->
-      <div class="scroll-pane" style="flex: 1; padding: 16px">
-        <div style="margin-bottom: 12px">
-          <StageAdvice
-            stage="deliver"
-            :presets="['这几个校验错误帮我修掉', '整体节奏太拖，帮我压缩一下', '检查一遍有没有中文残留']"
-          />
-        </div>
-
+      <div style="flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column">
+        <div class="scroll-pane" style="flex: 1; padding: 16px">
         <n-alert v-if="orphanCount" type="error" :bordered="false" style="margin-bottom: 12px">
           有 {{ orphanCount }} 个片段不在任何段里，不会出现在交付结果里。
           去「③ 组合与缝合」把它们并入相邻段。
@@ -595,8 +590,14 @@ function moveSchema(idx: number, dir: -1 | 1) {
             <span>{{ i.message }}</span>
           </div>
         </div>
+        </div>
       </div>
     </div>
+
+    <StageAdvice
+      stage="deliver"
+      :presets="['这几个校验错误帮我修掉', '整体节奏太拖，帮我压缩一下', '检查一遍有没有中文残留']"
+    />
 
     <n-modal v-model:show="showExport" preset="card" title="交付 JSON" style="max-width: 900px">
       <div class="row-between" style="margin-bottom: 10px">

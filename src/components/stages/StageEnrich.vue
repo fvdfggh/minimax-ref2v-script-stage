@@ -170,18 +170,16 @@ async function markAllEnriched() {
       </div>
     </div>
 
-    <div style="padding: 12px 16px 0">
-      <StageAdvice
-        stage="enrich"
-        scope="beats"
-        :presets="[
-          '运镜太单一了，多换几种景别',
-          '有几个片段的主体绑错了',
-          '画面描述太空，补上参考图里的特征'
-        ]"
-        @applied="emit('changed')"
-      />
-    </div>
+    <StageAdvice
+      stage="enrich"
+      scope="beats"
+      :presets="[
+        '运镜太单一了，多换几种景别',
+        '有几个片段的主体绑错了',
+        '画面描述太空，补上参考图里的特征'
+      ]"
+      @applied="emit('changed')"
+    />
 
     <div class="scroll-pane" style="flex: 1; padding: 16px">
       <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">

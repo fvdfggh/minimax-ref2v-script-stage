@@ -71,7 +71,7 @@ export const useAdviceStore = defineStore('advice', () => {
   const registry = useRegistryStore()
   const assembly = useAssemblyStore()
 
-  function resolveByName(name?: string): ID | undefined {
+  function resolveByName(name?: string | null): ID | undefined {
     if (!name) return undefined
     return registry.entities.find((e) => e.name === name)?.id
   }
@@ -139,14 +139,29 @@ export const useAdviceStore = defineStore('advice', () => {
 
   /**
    * 实体名 → 绑定关系。
-   * 注意 normalizeBeat 的约束：说话人必须在 entities 里，场景不能混在 entities 里。
+   *
+   * ★ 补丁是「部分」的：只给 speaker 时，必须把说话人并进**现有**主体列表，
+   *   而不是拿空数组重算 —— 否则一句"把说话人改成毒尊"会把这个镜头的
+   *   其他主体全部冲掉。
+   *
+   * 另外注意 normalizeBeat 的约束：说话人必须在 entities 里，场景不能混在 entities 里。
    */
-  function bindingsOf(p: AdviceBeatPatch) {
+  function bindingsOf(p: AdviceBeatPatch, cur?: Beat) {
     const sceneId = resolveByName(p.scene)
     const speakerId = resolveByName(p.speaker)
     const focusId = resolveByName(p.focus)
-    const ids = (p.entities ?? []).map(resolveByName).filter((x): x is ID => !!x)
-    const merged = [...new Set([...ids, ...(speakerId ? [speakerId] : [])])].filter((x) => x !== sceneId)
+
+    const base =
+      p.entities !== undefined
+        ? p.entities.map(resolveByName).filter((x): x is ID => !!x)
+        : [...(cur?.entities ?? [])]
+
+    // 场景既可能来自本次补丁，也可能是这个片段原本就绑着的
+    const effectiveScene = p.scene !== undefined ? sceneId : cur?.sceneId
+
+    const merged = [...new Set([...base, ...(speakerId ? [speakerId] : [])])].filter(
+      (x) => x !== effectiveScene
+    )
     return { sceneId, speakerId, focusId, entities: merged }
   }
 
@@ -185,17 +200,22 @@ export const useAdviceStore = defineStore('advice', () => {
         skipped.push(`修改片段 #${p.index}：序号超出范围`)
         continue
       }
-      const bind = bindingsOf(p)
+      const cur = beats.beatById.get(id)
+      const bind = bindingsOf(p, cur)
+
+      // ★ 只写「本次补丁真正提到的字段」。
+      //   undefined = 不改；null = 清空；有值 = 改成这个值。
+      //   没提到的字段原样保留 —— 这是部分补丁能成立的前提。
       const patch: Partial<Beat> = {}
-      if (p.title !== undefined) patch.title = p.title
+      if (p.title !== undefined) patch.title = p.title === null ? '' : p.title
       if (asKind(p.kind)) patch.kind = asKind(p.kind)
-      if (p.dialogue !== undefined) patch.dialogue = p.dialogue.trim() || undefined
-      if (p.direction !== undefined) patch.direction = p.direction || undefined
-      if (p.visualDesc !== undefined) patch.visualDesc = p.visualDesc || undefined
-      if (p.titleEn !== undefined) patch.titleEn = p.titleEn || undefined
-      if (p.directionEn !== undefined) patch.directionEn = p.directionEn || undefined
-      if (p.visualDescEn !== undefined) patch.visualDescEn = p.visualDescEn || undefined
-      if (p.scene !== undefined) patch.sceneId = bind.sceneId
+      if (p.dialogue !== undefined) patch.dialogue = p.dialogue === null ? undefined : p.dialogue.trim() || undefined
+      if (p.direction !== undefined) patch.direction = p.direction === null ? undefined : p.direction || undefined
+      if (p.visualDesc !== undefined) patch.visualDesc = p.visualDesc === null ? undefined : p.visualDesc || undefined
+      if (p.titleEn !== undefined) patch.titleEn = p.titleEn === null ? undefined : p.titleEn || undefined
+      if (p.directionEn !== undefined) patch.directionEn = p.directionEn === null ? undefined : p.directionEn || undefined
+      if (p.visualDescEn !== undefined) patch.visualDescEn = p.visualDescEn === null ? undefined : p.visualDescEn || undefined
+      if (p.scene !== undefined) patch.sceneId = p.scene === null ? undefined : bind.sceneId
       if (p.entities !== undefined || p.speaker !== undefined) {
         patch.entities = bind.entities
         // speakerId 交给 normalizeBeat 兜底：非台词片段会自动清掉

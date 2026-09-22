@@ -359,17 +359,16 @@ function isAutoBeat(b: Beat) {
       </n-alert>
     </div>
 
-    <div v-if="current" style="padding: 12px 16px 0">
-      <StageAdvice
-        stage="assemble"
-        scope="groups"
-        :presets="[
-          '某段太长了，帮我从台词那里切开',
-          '这两段应该合成一段',
-          '这几段的缝合总要走黑屏，调整一下边界'
-        ]"
-      />
-    </div>
+    <StageAdvice
+      v-if="current"
+      stage="assemble"
+      scope="groups"
+      :presets="[
+        '某段太长了，帮我从台词那里切开',
+        '这两段应该合成一段',
+        '这几段的缝合总要走黑屏，调整一下边界'
+      ]"
+    />
 
     <div class="scroll-pane" style="flex: 1; padding: 16px">
       <div v-if="!assembly.assemblies.length" class="empty">
