@@ -1,25 +1,67 @@
-# 依赖
-node_modules/
-
-# 构建产物
-dist/
-dist.bak/
-.build-check/
-
-# 日志与 Vite 临时配置
+# Logs
+logs
 *.log
-vite.config.ts.timestamp-*.mjs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
 
-# 本地打包副本
-*.zip
+# Dependencies
+node_modules
+dist
+dist-ssr
+dist-*
 
-# 环境变量（模型 Key 一律不要进仓库）
-.env
-.env.*
-!.env.example
+# IDE and editor files
+.vscode/*
+!.vscode/extensions.json
+.idea
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
-# 编辑器 / 系统
-.vscode/
-.idea/
+# OS files
 .DS_Store
 Thumbs.db
+desktop.ini
+
+# TypeScript
+*.tsbuildinfo
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Build output
+build/
+out/
+
+# Cache
+.cache
+.nuxt
+.vite
+
+# Coverage for tests
+coverage
+*.lcov
+
+# Misc lock files
+*.lock
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# Demo video frames (Ref2VA workflow)
+shared_params/*.png
+shared_params/*.jpg
+shared_params/*.jpeg
+generated-images/
+
+# Temp files
+*.tmp
+*.temp
+.cache/
