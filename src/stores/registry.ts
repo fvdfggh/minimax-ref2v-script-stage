@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { db, saveMany, saveOne } from '@/db'
+import { db, isBackend, saveMany, saveOne } from '@/db'
+import { backendAssetUrl } from '@/core/backend'
 import { uid, now } from '@/core/id'
 import {
   applyNumbering,
@@ -230,6 +231,8 @@ export const useRegistryStore = defineStore('registry', () => {
   }
 
   function assetUrl(asset: Asset): string | null {
+    // 后端模式下图片本体在数据目录里，浏览器这边没有 blob
+    if (isBackend()) return backendAssetUrl(asset.projectId, asset.fileName)
     if (!asset.blob) return null
     return URL.createObjectURL(asset.blob)
   }

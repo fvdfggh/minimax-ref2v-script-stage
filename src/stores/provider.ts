@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { db, kvSet, saveOne } from '@/db'
+import { db, kvGet, kvSet, saveOne } from '@/db'
 import { uid, now } from '@/core/id'
 import { chat, chatJson, extractJson, listModels } from '@/core/llm/openai'
 import type { Provider } from '@/domain/types'
@@ -48,8 +48,8 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function load() {
     providers.value = await db.providers.toArray()
-    const kv = await db.kv.get('currentProviderId')
-    currentId.value = (kv?.value as string) ?? providers.value[0]?.id ?? null
+    currentId.value =
+      (await kvGet<string | null>('currentProviderId', null)) ?? providers.value[0]?.id ?? null
     if (!providers.value.length) {
       await create({
         name: 'DeepSeek',

@@ -25,8 +25,8 @@ const DRAFTS: Stage1Beat[] = [
 ]
 
 async function freshDb() {
-  await db.delete()
-  await db.open()
+  await db.delete?.()
+  await db.open?.()
 }
 
 describe('stores 端到端（真实 IndexedDB 语义）', () => {

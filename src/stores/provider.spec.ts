@@ -5,8 +5,8 @@ import { db } from '@/db'
 import { useProviderStore } from './provider'
 
 async function freshDb() {
-  await db.delete()
-  await db.open()
+  await db.delete?.()
+  await db.open?.()
 }
 
 describe('供应商就绪判定 ready', () => {

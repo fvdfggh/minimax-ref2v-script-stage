@@ -8,6 +8,8 @@ import { useBeatStore } from '@/stores/beats'
 import { useAssemblyStore } from '@/stores/assembly'
 import { useProviderStore } from '@/stores/provider'
 import { usePipelineStore } from '@/stores/pipeline'
+import { useStorageStore } from '@/stores/storage'
+import { setStorageProject } from '@/db'
 import RegistryPanel from '@/components/RegistryPanel.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
 import StageSplit from '@/components/stages/StageSplit.vue'
@@ -27,6 +29,7 @@ const beats = useBeatStore()
 const assembly = useAssemblyStore()
 const provider = useProviderStore()
 const pipeline = usePipelineStore()
+const storage = useStorageStore()
 
 const tab = ref<'split' | 'enrich' | 'assemble' | 'complete' | 'localize' | 'deliver'>('split')
 const showRegistry = ref(false)
@@ -47,12 +50,15 @@ const tabs = [
 ] as const
 
 async function boot() {
+  await storage.init()
   await project.loadAll()
   if (!project.current) {
     message.warning('项目不存在')
     router.replace('/')
     return
   }
+  // 后端模式下删除操作只给 id，适配器得先知道在哪个项目里
+  setStorageProject(projectId.value)
   await Promise.all([
     registry.load(projectId.value),
     beats.load(projectId.value),

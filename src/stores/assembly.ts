@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { db, kvSet, saveOne } from '@/db'
+import { db, kvDelete, kvGet, kvSet, saveOne } from '@/db'
 import { uid, now } from '@/core/id'
 import {
   assemble,
@@ -103,12 +103,12 @@ export const useAssemblyStore = defineStore('assembly', () => {
     try {
       assemblies.value = await db.assemblies.where('projectId').equals(projectId).toArray()
       currentId.value = assemblies.value[0]?.id ?? null
-      const kv = await db.kv.get(`overrides:${projectId}`)
-      fieldOverrides.value = (kv?.value as Record<string, Record<string, string>>) ?? {}
-      const kv2 = await db.kv.get(`summaries:${projectId}`)
-      summaries.value = (kv2?.value as Record<string, string>) ?? {}
-      const kv3 = await db.kv.get(`segmeta:${projectId}`)
-      segmentMeta.value = (kv3?.value as Record<ID, SegmentMeta>) ?? {}
+      fieldOverrides.value =
+        (await kvGet<Record<string, Record<string, string>> | null>(`overrides:${projectId}`, null)) ?? {}
+      summaries.value =
+        (await kvGet<Record<string, string> | null>(`summaries:${projectId}`, null)) ?? {}
+      segmentMeta.value =
+        (await kvGet<Record<ID, SegmentMeta> | null>(`segmeta:${projectId}`, null)) ?? {}
     } finally {
       loading.value = false
     }
@@ -571,8 +571,8 @@ export const useAssemblyStore = defineStore('assembly', () => {
   }
 
   async function clearSegments(projectId: ID) {
-    await db.kv.delete(`overrides:${projectId}`)
-    await db.kv.delete(`summaries:${projectId}`)
+    await kvDelete(`overrides:${projectId}`)
+    await kvDelete(`summaries:${projectId}`)
     fieldOverrides.value = {}
     summaries.value = {}
   }

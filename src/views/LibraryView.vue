@@ -4,19 +4,26 @@ import { useRouter } from 'vue-router'
 import { NButton, NEmpty, NInput, NModal, NPopconfirm, useMessage } from 'naive-ui'
 import { useProjectStore } from '@/stores/project'
 import { useProviderStore } from '@/stores/provider'
+import { useStorageStore } from '@/stores/storage'
 import ProviderDialog from '@/components/ProviderDialog.vue'
+import StorageDialog from '@/components/StorageDialog.vue'
+import { isBackend } from '@/db'
 
 const router = useRouter()
 const project = useProjectStore()
 const provider = useProviderStore()
+const storage = useStorageStore()
 const message = useMessage()
 
 const showCreate = ref(false)
 const showProvider = ref(false)
+const showStorage = ref(false)
 const newName = ref('')
 const newStory = ref('')
 
+// 存储模式必须比任何读库操作先定下来，否则读的是上一个数据源
 onMounted(async () => {
+  await storage.init()
   await Promise.all([project.loadAll(), provider.load()])
 })
 
@@ -65,6 +72,19 @@ function stageLabel(stage: string) {
         </div>
       </div>
       <div class="row">
+        <n-button quaternary @click="showStorage = true">
+          存储
+          <span
+            class="tag-chip"
+            :style="{
+              marginLeft: '6px',
+              background: isBackend() ? 'var(--accent-soft)' : '#f2f4f7',
+              color: isBackend() ? 'var(--accent)' : '#5b6273'
+            }"
+          >
+            {{ isBackend() ? '后端目录' : '浏览器' }}
+          </span>
+        </n-button>
         <n-button quaternary @click="showProvider = true">
           模型设置
           <span
@@ -159,6 +179,7 @@ function stageLabel(stage: string) {
     </n-modal>
 
     <ProviderDialog v-model:show="showProvider" />
+    <StorageDialog v-model:show="showStorage" />
   </div>
 </template>
 

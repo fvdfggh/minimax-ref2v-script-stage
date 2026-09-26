@@ -350,6 +350,12 @@ export interface ProjectSettings {
   beatBatchSize: number
   /** 阶段⑤：单批翻译的词条数上限 */
   glossaryBatchSize: number
+  /**
+   * 导演包输出画布尺寸。
+   * r2v 走 gen_blank 分支，后端强校验：≥32 且为 32 的倍数。
+   */
+  outputWidth: number
+  outputHeight: number
   /** 各 kind 的默认帧数 */
   actionFrames: number
   reactionFrames: number
@@ -372,6 +378,8 @@ export const DEFAULT_SETTINGS: ProjectSettings = {
   storyChunkChars: 1500,
   beatBatchSize: 12,
   glossaryBatchSize: 30,
+  outputWidth: 864,
+  outputHeight: 480,
   actionFrames: 36,
   reactionFrames: 18,
   insertFrames: 12,

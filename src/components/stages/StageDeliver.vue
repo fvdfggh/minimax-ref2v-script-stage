@@ -1,6 +1,15 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { NAlert, NButton, NInput, NModal, NSelect, NTag, useMessage } from 'naive-ui'
+import {
+  NAlert,
+  NButton,
+  NInput,
+  NInputNumber,
+  NModal,
+  NSelect,
+  NTag,
+  useMessage
+} from 'naive-ui'
 import { useProjectStore } from '@/stores/project'
 import { useBeatStore } from '@/stores/beats'
 import { useRegistryStore } from '@/stores/registry'
@@ -14,9 +23,22 @@ import { splitIssuesByScope } from '@/domain/rules'
 import { hasCjkOutsideD } from '@/domain/lang'
 import type { FixPatch } from '@/core/llm/prompts'
 import { composeSegmentText } from '@/domain/derive'
+import { collectEntities } from '@/domain/beats'
+import {
+  buildDirectorPack,
+  buildDirectorPackZip,
+  CANVAS_MULTIPLE,
+  DEFAULT_OUTPUT_HEIGHT,
+  DEFAULT_OUTPUT_WIDTH,
+  preferredDurationSecFromFrames,
+  snapCanvas,
+  type PackBuildInput,
+  type PackSegmentInput
+} from '@/domain/pack'
 import { secondsFromFrames } from '@/domain/timing'
 import { formatPad } from '@/domain/frames'
-import type { FieldSchema, ID, ProjectSettings } from '@/domain/types'
+import type { Entity, FieldSchema, ID, ProjectSettings } from '@/domain/types'
+import type { SegmentView } from '@/stores/assembly'
 
 const project = useProjectStore()
 const beats = useBeatStore()
@@ -283,15 +305,96 @@ function exportJson() {
   return assembly.exportAssembly(views.value, schema.value, settings.value)
 }
 
-function download() {
-  const blob = new Blob([exportJson()], { type: 'application/json' })
+function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
-  a.download = `${project.current?.name ?? 'segments'}-deliverable.json`
+  a.download = filename
   a.click()
   URL.revokeObjectURL(url)
+}
+
+function download() {
+  downloadBlob(
+    new Blob([exportJson()], { type: 'application/json' }),
+    `${project.current?.name ?? 'segments'}-deliverable.json`
+  )
   message.success('已导出')
+}
+
+/* ---------------- 导演包导出 ---------------- */
+
+const packWidth = ref(DEFAULT_OUTPUT_WIDTH)
+const packHeight = ref(DEFAULT_OUTPUT_HEIGHT)
+const packBusy = ref(false)
+
+watch(
+  () => [settings.value.outputWidth, settings.value.outputHeight],
+  ([w, h]) => {
+    packWidth.value = Number(w) || DEFAULT_OUTPUT_WIDTH
+    packHeight.value = Number(h) || DEFAULT_OUTPUT_HEIGHT
+  },
+  { immediate: true }
+)
+
+/** 一段 -> 打包输入。参考图以提示词里的 <Picture N> 为准，实体绑定只作补充 */
+function packSegmentOf(v: SegmentView): PackSegmentInput {
+  const ids = collectEntities(v.narrativeBeats)
+  return {
+    id: v.group.id,
+    frames: v.frames,
+    prompt: composeSegmentText(schema.value, v.fields),
+    refPrev: v.refPrev,
+    continuityFromPrev: v.seam?.continuityFromPrev ?? false,
+    continuityToNext: v.nextSeam?.continuityToNext ?? false,
+    entities: ids
+      .map((id) => registry.entityById.get(id))
+      .filter((e): e is Entity => !!e)
+  }
+}
+
+const packInput = computed<PackBuildInput>(() => ({
+  projectName: project.current?.name ?? '',
+  settings: settings.value,
+  segments: views.value.map(packSegmentOf),
+  assets: registry.assets,
+  width: packWidth.value,
+  height: packHeight.value
+}))
+
+/** 导出前就把问题摆出来，别等导入端静默清空槽位才发现 */
+const packWarnings = computed(() => {
+  if (!views.value.length) return []
+  try {
+    return buildDirectorPack(packInput.value).warnings
+  } catch {
+    return []
+  }
+})
+
+/** 每段对面会显示的秒数（24fps 重算后的帧数要能对上） */
+const packTotalSec = computed(() =>
+  views.value.reduce((s, v) => s + preferredDurationSecFromFrames(v.frames), 0)
+)
+
+async function exportPack() {
+  if (!views.value.length) return
+  packBusy.value = true
+  try {
+    const w = snapCanvas(packWidth.value, DEFAULT_OUTPUT_WIDTH)
+    const h = snapCanvas(packHeight.value, DEFAULT_OUTPUT_HEIGHT)
+    packWidth.value = w
+    packHeight.value = h
+    if (project.currentId) await project.updateSettings({ outputWidth: w, outputHeight: h })
+
+    const res = await buildDirectorPackZip({ ...packInput.value, width: w, height: h })
+    downloadBlob(res.blob, res.filename)
+    message.success(res.warnings.length ? `导演包已导出（${res.warnings.length} 条提醒）` : '导演包已导出')
+  } catch (err) {
+    message.error(`导演包导出失败：${err instanceof Error ? err.message : String(err)}`)
+  } finally {
+    packBusy.value = false
+  }
 }
 
 function openSchema() {
@@ -599,15 +702,59 @@ function moveSchema(idx: number, dir: -1 | 1) {
       :presets="['这几个校验错误帮我修掉', '整体节奏太拖，帮我压缩一下', '检查一遍有没有中文残留']"
     />
 
-    <n-modal v-model:show="showExport" preset="card" title="交付 JSON" style="max-width: 900px">
+    <n-modal v-model:show="showExport" preset="card" title="导出" style="max-width: 900px">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px">
+        <b>导演包 zip</b> 给 MiniMax H3 Director 的「导入导演包」用；下面的 JSON 只是给人看的自检文本。
+        <span v-if="!finalMode" style="color: #b06a12">当前仍是中文工作稿。</span>
+      </n-alert>
+
+      <div class="row" style="gap: 10px; margin-bottom: 10px; flex-wrap: wrap">
+        <span class="muted" style="font-size: 12.5px">输出分辨率（{{ CANVAS_MULTIPLE }} 的倍数）</span>
+        <n-input-number
+          v-model:value="packWidth"
+          size="small"
+          :min="CANVAS_MULTIPLE"
+          :step="CANVAS_MULTIPLE"
+          style="width: 120px"
+        />
+        <span class="muted">×</span>
+        <n-input-number
+          v-model:value="packHeight"
+          size="small"
+          :min="CANVAS_MULTIPLE"
+          :step="CANVAS_MULTIPLE"
+          style="width: 120px"
+        />
+        <span class="muted mono" style="font-size: 12px">
+          {{ views.length }} 段 · 约 {{ packTotalSec.toFixed(1) }}s
+        </span>
+      </div>
+
+      <n-alert
+        v-if="packWarnings.length"
+        type="warning"
+        :bordered="false"
+        style="margin-bottom: 12px"
+      >
+        <div v-for="(w, i) in packWarnings" :key="i" style="margin-bottom: 2px">· {{ w }}</div>
+      </n-alert>
+
       <div class="row-between" style="margin-bottom: 10px">
         <span class="muted" style="font-size: 12.5px">
           含每段帧数、连续性参数、缝合判定、字段全文
-          <span v-if="!finalMode" style="color: #b06a12">· 当前仍是中文工作稿</span>
         </span>
         <div class="row" style="gap: 8px">
-          <n-button size="small" @click="copyText(exportJson())">复制</n-button>
-          <n-button size="small" type="primary" @click="download">下载</n-button>
+          <n-button size="small" @click="copyText(exportJson())">复制 JSON</n-button>
+          <n-button size="small" :disabled="!views.length" @click="download">下载 JSON</n-button>
+          <n-button
+            size="small"
+            type="primary"
+            :loading="packBusy"
+            :disabled="!views.length"
+            @click="exportPack"
+          >
+            下载导演包 zip
+          </n-button>
         </div>
       </div>
       <textarea

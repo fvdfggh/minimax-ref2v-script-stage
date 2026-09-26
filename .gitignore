@@ -65,3 +65,9 @@ generated-images/
 *.tmp
 *.temp
 .cache/
+
+# 后端运行时日志（start-backend.bat / 手动重定向产生）
+server.err
+server.out
+__pycache__/
+*.pyc

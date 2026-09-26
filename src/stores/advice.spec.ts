@@ -21,8 +21,8 @@ const DRAFTS = [
 ]
 
 async function freshDb() {
-  await db.delete()
-  await db.open()
+  await db.delete?.()
+  await db.open?.()
 }
 
 /** 建项目 + 片段 + 实体 + 一个方案，返回常用句柄 */
