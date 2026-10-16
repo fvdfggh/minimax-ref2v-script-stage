@@ -157,6 +157,16 @@ function patch(key: keyof Provider, value: unknown) {
                 <n-button :loading="probing" @click="probe">拉取列表</n-button>
               </div>
             </div>
+            <div>
+              <div class="muted" style="margin-bottom: 4px">
+                图片模型名（可选，用于生成 / 编辑图片；留空则回退到上面的主模型）
+              </div>
+              <n-input
+                :value="provider.current.imageModel ?? ''"
+                placeholder="gpt-image-1 / dall-e-3 / 你的图片模型名"
+                @update:value="(v: string) => patch('imageModel', v || undefined)"
+              />
+            </div>
           </div>
         </n-tab-pane>
 

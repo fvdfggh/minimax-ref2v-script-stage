@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, h, ref } from 'vue'
+import { computed, h, onMounted, ref, watch } from 'vue'
 import {
   NButton,
   NDataTable,
@@ -17,15 +17,88 @@ import { useBeatStore } from '@/stores/beats'
 import { useProjectStore } from '@/stores/project'
 import { ENTITY_TYPE_LABEL, groupEntitiesByLayer, normalizeVoiceDesc } from '@/domain/registry'
 import type { Asset, Entity, EntityKind, EntityType } from '@/domain/types'
+import { useImageStore } from '@/stores/images'
+import { useSeriesStore } from '@/stores/series'
+import { db } from '@/db'
+import { backendAssetUrl } from '@/core/backend'
+import ImageGenModal from './ImageGenModal.vue'
 
 const registry = useRegistryStore()
 const beats = useBeatStore()
 const project = useProjectStore()
 const message = useMessage()
+const images = useImageStore()
 
 const fileInput = ref<HTMLInputElement | null>(null)
 
+/* 主体参考图：生成 / 编辑（图生图） */
+const imgModal = ref<{ entity: Entity } | null>(null)
+function openSubjectImage(e: Entity) {
+  imgModal.value = { entity: e }
+}
+function subjectImageUrl(e: Entity): string | null {
+  const a = registry.subjectImageFor(e.id)
+  return a ? registry.assetUrl(a) : null
+}
+
 const projectId = computed(() => project.currentId ?? '')
+
+/* 项目(系列)上下文：本集主体可"提升"为大主体；项目大主体可"注入"到本集 */
+const series = useSeriesStore()
+const seriesId = computed(() => project.current?.seriesId)
+
+const globalSubjects = ref<Entity[]>([])
+const globalAssets = ref<Asset[]>([])
+async function loadGlobal() {
+  if (!seriesId.value) {
+    globalSubjects.value = []
+    globalAssets.value = []
+    return
+  }
+  const sid = seriesId.value
+  const [ents, assets] = await Promise.all([
+    db.entities.where('projectId').equals(sid).toArray(),
+    db.assets.where('projectId').equals(sid).toArray()
+  ])
+  globalSubjects.value = ents
+  globalAssets.value = assets
+}
+onMounted(loadGlobal)
+watch(seriesId, loadGlobal)
+
+function globalImageUrl(g: Entity): string | null {
+  if (!g.pictureN) return null
+  const a = globalAssets.value.find((x) => x.pictureN === g.pictureN)
+  return a && seriesId.value ? backendAssetUrl(seriesId.value, a.fileName) : null
+}
+
+/** 把本集主体"提升"为项目大主体（复制回项目层，本集保留原主体） */
+async function promoteToSeries(e: Entity) {
+  const sid = seriesId.value
+  const pid = project.currentId
+  if (!sid || !pid) return
+  try {
+    await series.promoteToSeries(pid, e.id, sid)
+    message.success(`已把「${e.name}」提升为项目大主体（本集保留原主体）`)
+  } catch (err) {
+    message.error((err as Error).message)
+  }
+}
+
+/** 把项目大主体"注入"到本集（复制进本集，独立编号/参考图） */
+async function injectToThisEpisode(g: Entity) {
+  const sid = seriesId.value
+  const pid = project.currentId
+  if (!sid || !pid) return
+  try {
+    const res = await series.injectToEpisode(sid, g.id, pid)
+    await registry.load(pid) // 让注入的副本立刻显示出来
+    if (!res.imageCopied) message.warning(`已注入「${g.name}」（参考图未复制成功）`)
+    else message.success(`已把「${g.name}」注入到本集`)
+  } catch (err) {
+    message.error((err as Error).message)
+  }
+}
 
 const typeOptions = (Object.keys(ENTITY_TYPE_LABEL) as EntityType[]).map((t) => ({
   label: ENTITY_TYPE_LABEL[t],
@@ -83,28 +156,62 @@ const entityColumns = computed<DataTableColumns<Entity>>(() => [
         size: 'small',
         clearable: true,
         placeholder: '纯文本',
-        options: registry.assets.map((a) => ({
-          label: `<Picture ${a.pictureN}> ${a.label}`,
-          value: a.pictureN
-        })),
+        // 只列主体参考图（pictureN>0），场景图(pictureN=0)不进 reference 槽
+        options: registry.assets
+          .filter((a) => a.kind !== 'scene' && a.pictureN > 0)
+          .map((a) => ({
+            label: `<Picture ${a.pictureN}> ${a.label}`,
+            value: a.pictureN
+          })),
         onUpdateValue: (v: number | null) => registry.updateEntity(row.id, { pictureN: v })
       })
   },
   {
+    title: '参考图',
+    key: 'refimg',
+    width: 118,
+    render: (row) => {
+      const a = registry.subjectImageFor(row.id)
+      const url = a ? registry.assetUrl(a) : null
+      return h('div', { style: 'display:flex;align-items:center;gap:6px' }, [
+        url
+          ? h('img', {
+              src: url,
+              style:
+                'width:32px;height:32px;border-radius:4px;object-fit:cover;flex:none;background:#f1f3f6'
+            })
+          : h('span', { style: 'width:32px;height:32px;flex:none;background:#f1f3f6;border-radius:4px' }),
+        h(
+          NButton,
+          {
+            size: 'tiny',
+            quaternary: true,
+            onClick: () => openSubjectImage(row)
+          },
+          { default: () => (url ? '换 / 编辑' : '生成') }
+        )
+      ])
+    }
+  },
+  {
     title: '操作',
     key: 'ops',
-    width: 64,
+    width: 118,
     render: (row) =>
-      h(
-        NButton,
-        {
-          size: 'tiny',
-          quaternary: true,
-          type: 'error',
-          onClick: () => registry.removeEntity(row.id)
-        },
-        { default: () => '删除' }
-      )
+      h('div', { style: 'display:flex;gap:4px;align-items:center' }, [
+        seriesId.value
+          ? h(
+              NButton,
+              { size: 'tiny', quaternary: true, onClick: () => promoteToSeries(row) },
+              { default: () => '提升' }
+            )
+          : null,
+        h(
+          NButton,
+          { size: 'tiny', quaternary: true, type: 'error', onClick: () => registry.removeEntity(row.id) },
+          { default: () => '删除' }
+        )
+      ])
   }
 ])
 
@@ -201,7 +308,8 @@ const voiceRows = computed(() =>
     <n-tab-pane name="assets" tab="素材">
       <div class="row-between" style="margin-bottom: 10px">
         <div class="muted" style="font-size: 12.5px">
-          拖入或选择图片，自动按 shared_params/PictureN.png 编号
+          拖入或选择图片，自动按 shared_params/PictureN.png 编号。
+          每张素材的「素材说明」会作为只读上下文交给大模型帮它理解参考内容，但不会写进最终生成的提示词。
         </div>
         <div class="row">
           <n-button size="small" @click="registry.compactAssets()">压缩编号</n-button>
@@ -253,12 +361,55 @@ const voiceRows = computed(() =>
           <n-input
             size="tiny"
             :value="a.label"
-            placeholder="素材说明"
+            placeholder="标签"
             @update:value="(v: string) => registry.updateAsset(a.id, { label: v })"
+          />
+          <n-input
+            type="textarea"
+            size="tiny"
+            :rows="2"
+            :value="a.desc ?? ''"
+            placeholder="素材说明（供大模型读取，不进最终提示词）"
+            @update:value="(v: string) => registry.updateAsset(a.id, { desc: v })"
           />
         </div>
       </div>
       <div v-if="!registry.assets.length" class="empty">还没有素材</div>
     </n-tab-pane>
+
+    <n-tab-pane v-if="seriesId" name="globals" tab="项目大主体">
+      <div class="muted" style="font-size: 12.5px; margin-bottom: 12px; line-height: 1.7">
+        把项目层的「大主体」注入到本集：复制一份进本集（独立编号 + 参考图，本集独立打包）。
+      </div>
+      <div v-if="!globalSubjects.length" class="empty">项目里还没有大主体，请到项目页维护大主体</div>
+      <div v-else class="stack" style="gap: 8px">
+        <div
+          v-for="g in globalSubjects"
+          :key="g.id"
+          style="display: flex; align-items: center; gap: 10px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px"
+        >
+          <img
+            v-if="globalImageUrl(g)"
+            :src="globalImageUrl(g)!"
+            style="width: 36px; height: 36px; border-radius: 6px; object-fit: cover; flex: none; background: #f1f3f6"
+          />
+          <div v-else style="width: 36px; height: 36px; border-radius: 6px; background: #f1f3f6; flex: none" />
+          <div style="flex: 1; min-width: 0; font-weight: 600; font-size: 13px">{{ g.name }}</div>
+          <n-tag size="small" :bordered="false">{{ ENTITY_TYPE_LABEL[g.type] }}</n-tag>
+          <n-button size="small" type="primary" ghost @click="injectToThisEpisode(g)">注入到本集</n-button>
+        </div>
+      </div>
+    </n-tab-pane>
   </n-tabs>
+
+  <ImageGenModal
+    v-if="imgModal"
+    :show="true"
+    title="主体参考图"
+    :default-prompt="imgModal ? images.subjectPrompt(imgModal.entity) : ''"
+    :base-image-url="imgModal ? subjectImageUrl(imgModal.entity) : null"
+    default-size="1024x1024"
+    @done="(blob: Blob) => imgModal && images.attachSubjectImage(imgModal.entity.id, blob)"
+    @update:show="(v: boolean) => { if (!v) imgModal = null }"
+  />
 </template>

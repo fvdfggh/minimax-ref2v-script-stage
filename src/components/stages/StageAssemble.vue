@@ -17,7 +17,9 @@ import { useBeatStore } from '@/stores/beats'
 import { useRegistryStore } from '@/stores/registry'
 import { useAssemblyStore, type SegmentView } from '@/stores/assembly'
 import SeamPanel from '@/components/SeamPanel.vue'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
+import SegmentDetailModal from '@/components/SegmentDetailModal.vue'
 import { BEAT_KIND_COLOR, BEAT_KIND_LABEL, collectScenes, resolveSubjectId } from '@/domain/beats'
 import { beatFrames, secondsFromFrames } from '@/domain/timing'
 import { formatPad } from '@/domain/frames'
@@ -48,6 +50,16 @@ const views = computed(() => {
     project.fieldSchema
   )
 })
+
+/* --------------------------- 视频段详情 --------------------------- */
+
+const detailGroupId = ref<ID | null>(null)
+const detailView = computed(() => views.value.find((v) => v.group.id === detailGroupId.value) ?? null)
+const detailIndex = computed(() => views.value.findIndex((v) => v.group.id === detailGroupId.value))
+
+async function onDetailPatch(id: ID, patch: Partial<Beat>) {
+  await beats.updateBeat(id, patch)
+}
 
 /* --------------------------- 级联：分组归位 --------------------------- */
 
@@ -100,6 +112,16 @@ const totals = computed(() => {
   return { frames, black, cut, over, errors }
 })
 
+/** 侧边目录：逐段定位，超限标红、黑屏兜底标黄 */
+const segNav = computed<SectionNavItem[]>(() =>
+  views.value.map((v, i) => ({
+    id: `as-g-${v.group.id}`,
+    label: `seg${String(i + 1).padStart(2, '0')}`,
+    hint: `${v.frames}f`,
+    tone: v.over ? 'err' : v.nextSeam?.blackFallback ? 'warn' : 'default'
+  }))
+)
+
 const modeOptions: Array<{ label: string; value: AssemblyMode; desc: string }> = [
   { label: '按场景优先', value: 'scene_first', desc: '同场景尽量合并，场景切换处强制拆' },
   { label: '填满优先', value: 'fill_max', desc: '贪心累加到接近上限再拆，段数最少' },
@@ -129,9 +151,15 @@ async function create() {
   )
   showCreate.value = false
   newName.value = ''
-  message.success(
-    `已生成 ${report.groups.length} 段${report.skipped.length ? `，${report.skipped.length} 个片段因未绑定实体被跳过` : ''}`
-  )
+  message.success(`已生成 ${report.groups.length} 段`)
+  if (report.skipped.length) {
+    const names = report.skipped.slice(0, 4).map((b) => b.title).join('、')
+    message.warning(
+      `${report.skipped.length} 个片段因缺场景/说话人绑定被跳过，不会进入任何段${
+        report.skipped.length > 4 ? '…' : ''
+      }：${names}。回「② 细节填充」补好绑定后重新组合。`
+    )
+  }
   if (report.blackFallbacks) {
     message.warning(`有 ${report.blackFallbacks} 个缝合点需要黑屏兜底`)
   }
@@ -370,7 +398,8 @@ function isAutoBeat(b: Beat) {
       ]"
     />
 
-    <div class="scroll-pane" style="flex: 1; padding: 16px">
+    <div style="flex: 1; min-height: 0; position: relative; display: flex">
+    <div class="scroll-pane" id="as-list" style="flex: 1; padding: 16px">
       <div v-if="!assembly.assemblies.length" class="empty">
         <div style="font-size: 15px; margin-bottom: 6px">还没有组合方案</div>
         <div>新建一个方案，引擎会把片段切成 ≤141 帧的段，并自动判定每处缝合</div>
@@ -380,7 +409,7 @@ function isAutoBeat(b: Beat) {
       </div>
 
       <template v-else>
-        <div v-for="(v, i) in views" :key="v.group.id" style="margin-bottom: 6px">
+        <div v-for="(v, i) in views" :key="v.group.id" :id="'as-g-' + v.group.id" style="margin-bottom: 6px">
           <div v-if="v.seam" style="margin-bottom: 6px">
             <SeamPanel :seam="v.seam" :index="i" :entity-by-id="registry.entityById" />
           </div>
@@ -464,6 +493,9 @@ function isAutoBeat(b: Beat) {
                 </span>
               </div>
               <div class="row" style="gap: 6px">
+                <n-button size="tiny" type="primary" ghost @click="detailGroupId = v.group.id">
+                  详情
+                </n-button>
                 <n-button
                   size="tiny"
                   quaternary
@@ -569,6 +601,8 @@ function isAutoBeat(b: Beat) {
         </div>
       </template>
     </div>
+    <SectionNav v-if="views.length >= 2" title="视频段" container="#as-list" :items="segNav" />
+    </div>
 
     <n-modal v-model:show="showCreate" preset="card" title="新建组合方案" style="max-width: 520px">
       <div class="stack">
@@ -604,5 +638,17 @@ function isAutoBeat(b: Beat) {
         </div>
       </template>
     </n-modal>
+
+    <SegmentDetailModal
+      :show="detailGroupId !== null"
+      :view="detailView"
+      :index="detailIndex"
+      :settings="settings"
+      :entities="registry.entities"
+      :entity-by-id="registry.entityById"
+      :schema="project.fieldSchema"
+      @patch="onDetailPatch"
+      @update:show="detailGroupId = null"
+    />
   </div>
 </template>

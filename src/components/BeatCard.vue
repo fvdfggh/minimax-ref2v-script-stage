@@ -16,6 +16,8 @@ const props = defineProps<{
   draggable?: boolean
   /** 建议拆分份数，>1 时显示拆分提示 */
   splitHint?: number
+  /** "过长被迫拆开"的分片信息；有值时卡片标一个"拆 i/n"徽章 */
+  splitPiece?: { index: number; total: number } | null
 }>()
 
 const emit = defineEmits<{
@@ -147,6 +149,15 @@ function onDrop(e: DragEvent) {
       >
         {{ kindLabel }}
       </span>
+      <n-tag
+        v-if="splitPiece"
+        size="tiny"
+        type="warning"
+        :bordered="false"
+        title="原片段过长，被迫拆成 {{ splitPiece.total }} 段，这是第 {{ splitPiece.index }} 段"
+      >
+        拆 {{ splitPiece.index }}/{{ splitPiece.total }}
+      </n-tag>
       <span style="flex: 1" />
       <n-tag v-if="isAuto" size="tiny" :bordered="false">自动</n-tag>
       <n-dropdown :options="moreOptions" trigger="click" @select="onMore" @click.stop>

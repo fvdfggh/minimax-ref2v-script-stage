@@ -1,6 +1,6 @@
 import { uid, now } from '@/core/id'
 import { beatFrames, countHanzi, dialogueFrames } from './timing'
-import type { Beat, BeatKind, ID, ProjectSettings } from './types'
+import type { Beat, BeatKind, Entity, ID, ProjectSettings } from './types'
 import { AUTO_KINDS, DEFAULT_SETTINGS } from './types'
 
 /* ------------------------------------------------------------------ *
@@ -233,6 +233,46 @@ export function autoSplitParts(beat: Beat, settings: ProjectSettings = DEFAULT_S
   }))
 }
 
+/* --------------------- 拆分血缘（"过长被迫拆开"标记） --------------------- */
+
+/** 一个"被迫拆分"分片的信息：第几片 + 共几片 */
+export interface SplitPiece {
+  /** 片号（1 起，按当前时间线顺序） */
+  index: number
+  /** 同一拆分血缘的分片总数 */
+  total: number
+}
+
+/**
+ * 每个片段是否为"被迫拆分"的分片（splitBeat 的产物，带 derivedFrom 血缘），
+ * 以及它是第几片、共几片。
+ *
+ * 只有带 derivedFrom 的片段才算"被迫拆分"：阶段一按镜头自然切出来的片段
+ * 没有血缘，不会被标。合并（mergeBeats）会清掉 derivedFrom，标记随之消失。
+ */
+export function splitPieceMap(beats: Beat[]): Map<ID, SplitPiece> {
+  const byParent = new Map<ID, ID[]>()
+  for (const b of sortBeats(beats)) {
+    if (!b.derivedFrom) continue
+    const arr = byParent.get(b.derivedFrom)
+    if (arr) arr.push(b.id)
+    else byParent.set(b.derivedFrom, [b.id])
+  }
+  const out = new Map<ID, SplitPiece>()
+  for (const children of byParent.values()) {
+    children.forEach((childId, i) => out.set(childId, { index: i + 1, total: children.length }))
+  }
+  return out
+}
+
+/**
+ * 两个相邻片段是否"同一镜头被过长拆成两段"（同一拆分血缘）。
+ * 用于在两段之间画一个"承接"标记。
+ */
+export function isSplitPair(prev: Beat, curr: Beat): boolean {
+  return !!curr.derivedFrom && curr.derivedFrom === prev.derivedFrom
+}
+
 /** 合并多个 Beat（撤回拆分） */
 export function mergeBeats(
   beats: Beat[],
@@ -342,6 +382,54 @@ export function resolveSubjectId(beat: Beat): ID | null {
   const list = entityIdsOf(beat)
   if (list.length >= 1) return list[0]
   return sceneIdOf(beat)
+}
+
+/* --------------------- 实体名解析（阶段①② 共用） --------------------- */
+
+export type EntityMatchKind = 'exact' | 'fuzzy' | 'none'
+
+export interface EntityResolveResult {
+  id: ID | undefined
+  match: EntityMatchKind
+}
+
+/**
+ * 实体名 -> id 的解析器。
+ *
+ * 精确匹配永远优先；模糊（互相包含）只是兜底，并且通过回调把「非精确」
+ * 的绑定暴露给调用方 —— 这类绑定可能绑错实体（"楚辞" 撞上 "楚辞子"），
+ * 必须显式提醒人工复核。完全没命中时返回 none、不做绑定，
+ * 让它以「未绑定」的形式显形，而不是静默落进别人身上。
+ */
+export function makeEntityResolver(
+  entities: Entity[],
+  onFuzzy?: (rawName: string, matchedName: string) => void
+): (name: string) => EntityResolveResult {
+  const byName = new Map<string, ID>()
+  for (const e of entities) if (!byName.has(e.name)) byName.set(e.name, e.id)
+  return (rawName: string) => {
+    const name = (rawName ?? '').trim()
+    if (!name) return { id: undefined, match: 'none' }
+    const exact = byName.get(name)
+    if (exact) return { id: exact, match: 'exact' }
+    // 多个候选同时满足包含关系时（"楚辞" / "楚辞子" 都能套住 "楚辞子子"），
+    // 取名字长度差最小的那个，而不是列表里碰巧排在前面的 —— 后者正是错绑的来源
+    let best: Entity | undefined
+    let bestDiff = Infinity
+    for (const e of entities) {
+      if (!e.name.includes(name) && !name.includes(e.name)) continue
+      const diff = Math.abs(e.name.length - name.length)
+      if (diff < bestDiff) {
+        best = e
+        bestDiff = diff
+      }
+    }
+    if (best) {
+      onFuzzy?.(name, best.name)
+      return { id: best.id, match: 'fuzzy' }
+    }
+    return { id: undefined, match: 'none' }
+  }
 }
 
 /**

@@ -507,6 +507,38 @@ body {
   bottom: 0;
 }
 
+/* ---------------------- "同一镜头被迫拆开" 承接标记 ---------------------- */
+
+/*
+ * 放在纵向片段列表里两段之间：左右虚线 + 中间胶囊标签。
+ * 只用于"因过长被迫拆开"的相邻两段（见 domain/beats.ts 的 isSplitPair）。
+ */
+.split-connector {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 1px 6px;
+  margin: 0 2px;
+}
+
+.split-connector-line {
+  flex: 1;
+  height: 0;
+  border-top: 1px dashed var(--warn);
+  opacity: 0.55;
+}
+
+.split-connector-label {
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 18px;
+  padding: 0 9px;
+  border-radius: 999px;
+  background: #fff9ec;
+  border: 1px solid #f2e2c0;
+  color: #8a6008;
+}
+
 /* ---------------------- 片段编辑弹窗 ---------------------- */
 
 .beat-label {

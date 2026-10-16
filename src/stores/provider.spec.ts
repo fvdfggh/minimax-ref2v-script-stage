@@ -1,12 +1,12 @@
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { db } from '@/db'
+import { db, setDbImpl, setKvImpl } from '@/db'
+import { createMemoryDb, createMemoryKv } from '@/db/memory'
 import { useProviderStore } from './provider'
 
 async function freshDb() {
-  await db.delete?.()
-  await db.open?.()
+  setDbImpl(createMemoryDb())
+  setKvImpl(createMemoryKv())
 }
 
 describe('供应商就绪判定 ready', () => {

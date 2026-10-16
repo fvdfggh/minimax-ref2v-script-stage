@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
-import { db, isBackend, saveMany, saveOne } from '@/db'
+import { db, saveMany, saveOne } from '@/db'
 import { backendAssetUrl } from '@/core/backend'
 import { uid, now } from '@/core/id'
 import {
@@ -9,7 +9,7 @@ import {
   normalizeVoiceDesc,
   numberingIsStale
 } from '@/domain/registry'
-import type { Asset, Beat, Entity, ID } from '@/domain/types'
+import type { Asset, AssetKind, Beat, Entity, ID } from '@/domain/types'
 
 export const useRegistryStore = defineStore('registry', () => {
   const entities = ref<Entity[]>([])
@@ -196,6 +196,46 @@ export const useRegistryStore = defineStore('registry', () => {
     return asset
   }
 
+  /**
+   * 存一张由模型生成/编辑出的图片。
+   *   kind=scene  → pictureN 固定 0，不进导演包 reference 槽，仅本地查看（场景图）
+   *   kind=subject→ 分配下一个可用 PictureN（进 reference 槽）
+   */
+  async function addGeneratedImage(
+    projectId: ID,
+    blob: Blob,
+    opts: { label?: string; kind?: AssetKind; refId?: ID } = {}
+  ): Promise<Asset> {
+    const kind: AssetKind = opts.kind ?? 'subject'
+    const isScene = kind === 'scene'
+    let pictureN = 0
+    if (!isScene) {
+      const used = assets.value.map((a) => a.pictureN).filter((n) => n > 0)
+      pictureN = 1
+      while (used.includes(pictureN)) pictureN++
+    }
+    const ts = now()
+    const type = blob.type || 'image/png'
+    const file = new File([blob], 'generated.png', { type })
+    const safeRef = (opts.refId ?? 'img').replace(/[^A-Za-z0-9_-]/g, '')
+    const fileName = isScene ? `scene_${safeRef}_${ts % 100000}.png` : `Picture${pictureN}.png`
+    const asset: Asset = {
+      id: uid('ast'),
+      projectId,
+      pictureN,
+      fileName,
+      originalName: file.name,
+      label: opts.label || (isScene ? '场景图' : '主体参考图'),
+      blob,
+      kind,
+      refId: opts.refId,
+      createdAt: ts
+    }
+    await saveOne(db.assets, asset)
+    assets.value = [...assets.value, asset].sort((a, b) => a.pictureN - b.pictureN)
+    return asset
+  }
+
   async function updateAsset(id: ID, patch: Partial<Asset>) {
     const idx = assets.value.findIndex((a) => a.id === id)
     if (idx < 0) return
@@ -211,11 +251,17 @@ export const useRegistryStore = defineStore('registry', () => {
     assets.value = assets.value.filter((a) => a.id !== id)
   }
 
-  /** 素材编号出现空档时压缩重排 */
+  /**
+   * 素材编号出现空档时压缩重排。
+   * 只重排主体参考图（kind!=scene 且 pictureN>0）；场景图 pictureN 恒为 0，
+   * 不参与 reference 编号，避免把主体编号顶出 1~9 的槽位。
+   */
   async function compactAssets() {
-    const sorted = [...assets.value].sort((a, b) => a.pictureN - b.pictureN)
+    const subjectAssets = [...assets.value]
+      .filter((a) => a.kind !== 'scene' && a.pictureN > 0)
+      .sort((a, b) => a.pictureN - b.pictureN)
     const patched: Asset[] = []
-    sorted.forEach((a, i) => {
+    subjectAssets.forEach((a, i) => {
       const pictureN = i + 1
       if (a.pictureN !== pictureN) {
         patched.push({
@@ -226,15 +272,28 @@ export const useRegistryStore = defineStore('registry', () => {
       }
     })
     if (patched.length) await saveMany(db.assets, patched)
-    assets.value = sorted.map((a, i) => patched.find((p) => p.id === a.id) ?? a)
+    const byId = new Map(patched.map((p) => [p.id, p]))
+    assets.value = [...assets.value]
+      .sort((a, b) => a.pictureN - b.pictureN)
+      .map((a) => byId.get(a.id) ?? a)
     return patched.length
   }
 
+  /** 主体的参考图（按 entity.pictureN 反查；手工上传与生成统一走这里） */
+  function subjectImageFor(entityId: ID): Asset | null {
+    const e = entities.value.find((x) => x.id === entityId)
+    if (!e || e.pictureN == null || e.pictureN <= 0) return null
+    return assets.value.find((a) => a.pictureN === e.pictureN) ?? null
+  }
+
+  /** 片段的场景图（pictureN=0，靠 refId=beatId 定位） */
+  function sceneImageFor(beatId: ID): Asset | null {
+    return assets.value.find((a) => a.kind === 'scene' && a.refId === beatId) ?? null
+  }
+
   function assetUrl(asset: Asset): string | null {
-    // 后端模式下图片本体在数据目录里，浏览器这边没有 blob
-    if (isBackend()) return backendAssetUrl(asset.projectId, asset.fileName)
-    if (!asset.blob) return null
-    return URL.createObjectURL(asset.blob)
+    // 图片本体在数据目录里，统一走后端地址
+    return backendAssetUrl(asset.projectId, asset.fileName)
   }
 
   return {
@@ -255,9 +314,12 @@ export const useRegistryStore = defineStore('registry', () => {
     renumber,
     stale,
     addAsset,
+    addGeneratedImage,
     updateAsset,
     removeAsset,
     compactAssets,
+    subjectImageFor,
+    sceneImageFor,
     assetUrl
   }
 })

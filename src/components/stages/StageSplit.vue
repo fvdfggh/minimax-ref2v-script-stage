@@ -7,10 +7,12 @@ import { useRegistryStore } from '@/stores/registry'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useProviderStore } from '@/stores/provider'
 import BeatCard from '@/components/BeatCard.vue'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
 import BeatEditDialog from '@/components/BeatEditDialog.vue'
 import EntityProposalDialog from '@/components/EntityProposalDialog.vue'
 import { beatFrames, beatsFrames, countHanzi, secondsFromFrames } from '@/domain/timing'
+import { makeEntityResolver, splitPieceMap } from '@/domain/beats'
 import { CHARS_PER_BEAT_HINT, splitStory } from '@/domain/chunk'
 import type { Beat, ID } from '@/domain/types'
 import type { EntityProposal } from '@/stores/pipeline'
@@ -43,6 +45,18 @@ const dialogueFrames = computed(() =>
 const splitHints = computed(() => list.value.filter((b) => beats.shouldSplit(b.id, settings.value)).length)
 const dialogueRatio = computed(() =>
   totalFrames.value ? Math.min(100, (dialogueFrames.value / totalFrames.value) * 100) : 0
+)
+
+/** "过长被迫拆开"的分片血缘：beatId -> {index, total} */
+const splitPieces = computed(() => splitPieceMap(list.value))
+
+/** 侧边目录：逐片段定位，超长待拆的标黄 */
+const beatNav = computed<SectionNavItem[]>(() =>
+  list.value.map((b, i) => ({
+    id: `sp-b-${b.id}`,
+    label: `${String(i + 1).padStart(2, '0')} ${b.title || '（未命名）'}`,
+    tone: beats.shouldSplit(b.id, settings.value) ? 'warn' : 'default'
+  }))
 )
 
 /* --------------------------- 分批拆解 --------------------------- */
@@ -162,16 +176,22 @@ async function applyStage1(drafts: Stage1Beat[], accepted: EntityProposal[]) {
     createdCount = created.length
   }
 
+  // 实体名单 → id 映射：精确匹配优先；模糊匹配要留痕提醒；
+  // 没命中的不绑，让它以「未绑定」的形式在 ②③ 里显形
+  const fuzzyPairs: string[] = []
+  const unmatched = new Set<string>()
+
   if (drafts.length) {
     if (appendMode.value) await beats.appendDrafts(pid, drafts)
     else await beats.replaceAll(pid, drafts)
 
-    // 实体名单 → id 映射（先按名字精确匹配，再退化到包含匹配）
+    const resolveWith = makeEntityResolver(registry.entities, (raw, hit) => {
+      fuzzyPairs.push(`${raw} → ${hit}`)
+    })
     const resolve = (name: string): string | undefined => {
-      const exact = registry.entities.find((e) => e.name === name)
-      if (exact) return exact.id
-      const fuzzy = registry.entities.find((e) => e.name.includes(name) || name.includes(e.name))
-      return fuzzy?.id
+      const r = resolveWith(name)
+      if (r.match === 'none' && name.trim()) unmatched.add(name.trim())
+      return r.id
     }
     const mapping: Record<string, { scene?: string; entities?: string[]; speaker?: string }> = {}
     beats.ordered.forEach((b, i) => {
@@ -190,6 +210,22 @@ async function applyStage1(drafts: Stage1Beat[], accepted: EntityProposal[]) {
   message.success(
     `已生成 ${drafts.length} 个片段 · 新建 ${createdCount} 个实体 · 绑定 ${bound} 个片段`
   )
+  if (fuzzyPairs.length || unmatched.size) {
+    const bits: string[] = []
+    if (fuzzyPairs.length)
+      bits.push(
+        `${fuzzyPairs.length} 个实体名是模糊匹配（${fuzzyPairs.slice(0, 3).join('，')}${
+          fuzzyPairs.length > 3 ? '…' : ''
+        }），可能绑错，请复核`
+      )
+    if (unmatched.size)
+      bits.push(
+        `${unmatched.size} 个实体名未登记（${[...unmatched].slice(0, 4).join('，')}${
+          unmatched.size > 4 ? '…' : ''
+        }），对应片段未绑定`
+      )
+    message.warning(bits.join('；'))
+  }
   pendingDrafts.value = []
   proposals.value = []
 }
@@ -438,7 +474,8 @@ async function clearAll() {
         />
       </div>
 
-      <div class="scroll-pane" style="flex: 1; padding: 14px">
+      <div style="flex: 1; min-height: 0; position: relative; display: flex">
+      <div class="scroll-pane" id="sp-beats" style="flex: 1; padding: 14px">
         <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">
           {{ pipeline.error }}
         </n-alert>
@@ -452,12 +489,14 @@ async function clearAll() {
           <BeatCard
             v-for="(b, i) in list"
             :key="b.id"
+            :id="'sp-b-' + b.id"
             :beat="b"
             :index="i"
             :settings="settings"
             :entity-by-id="registry.entityById"
             :selected="selected.includes(b.id)"
             :split-hint="beats.shouldSplit(b.id, settings) ? beats.suggestSplit(b.id, settings) : 0"
+            :split-piece="splitPieces.get(b.id) ?? null"
             selectable
             draggable
             @select="toggleSelect"
@@ -468,6 +507,8 @@ async function clearAll() {
             @move="move"
           />
         </div>
+      </div>
+      <SectionNav v-if="list.length >= 2" title="片段" container="#sp-beats" :items="beatNav" />
       </div>
     </div>
 

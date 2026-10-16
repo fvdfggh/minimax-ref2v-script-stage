@@ -6,7 +6,8 @@ import {
   buildStage2Messages
 } from './prompts'
 import { DEFAULT_FIELD_SCHEMA, DEFAULT_SETTINGS } from '@/domain/types'
-import type { Beat, Entity, FieldSchema } from '@/domain/types'
+import type { Asset, Beat, Entity, FieldSchema } from '@/domain/types'
+import { composeSegmentText, deriveFields } from '@/domain/derive'
 
 function beat(patch: Partial<Beat> & { title: string; kind: Beat['kind'] }): Beat {
   return {
@@ -270,5 +271,92 @@ describe('阶段五：分批翻译词条', () => {
     const [, user] = buildGlossaryMessages({ beats: [], entities: [chuci] })
     expect(user.content).toContain('【实体词条】')
     expect(user.content).not.toContain('【片段词条】')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 参考素材说明：供大模型读取（只读上下文），但不进最终生成的提示词
+ * ------------------------------------------------------------------ */
+
+describe('参考素材说明：供大模型读取，但不进最终提示词', () => {
+  const DESC = '黑衣青年，撑着油纸伞，在雨中静立'
+  const assets: Asset[] = [
+    {
+      id: 'a1',
+      projectId: 'p',
+      pictureN: 1,
+      fileName: 'Picture1.png',
+      originalName: 'c.png',
+      label: '楚辞',
+      kind: 'subject',
+      desc: DESC,
+      createdAt: 1
+    },
+    {
+      id: 'a2',
+      projectId: 'p',
+      pictureN: 5,
+      fileName: 'Picture5.png',
+      originalName: 'd.png',
+      label: '毒渊',
+      kind: 'subject',
+      desc: '雾气弥漫的洞窟，岩壁渗水',
+      createdAt: 1
+    }
+  ]
+
+  it('阶段二：素材说明作为只读上下文交给模型，并要求不写进输出字段', () => {
+    const [system] = buildStage2Messages(BEATS, ENTITIES, { assets })
+    expect(system.content).toContain(DESC)
+    expect(system.content).toContain('<Picture 5>')
+    expect(system.content).toContain('只读上下文')
+    expect(system.content).toContain('写进任何输出字段')
+  })
+
+  it('阶段三：素材说明进入段补全的输入（供模型理解参考内容）', () => {
+    const [, user] = buildSegmentFillMessages({
+      schema: DEFAULT_FIELD_SCHEMA,
+      groupBeats: BEATS,
+      entities: ENTITIES,
+      seamFromPrev: null,
+      nextSeam: null,
+      existing: EXISTING,
+      segmentIndex: 2,
+      segmentTotal: 7,
+      frames: 141,
+      fps: DEFAULT_SETTINGS.fps,
+      assets
+    })
+    expect(user.content).toContain(DESC)
+    expect(user.content).toContain('写进任何输出字段')
+  })
+
+  it('素材没有 desc 时，不生成素材说明块（不产生空块）', () => {
+    const bare: Asset[] = [
+      {
+        id: 'a3',
+        projectId: 'p',
+        pictureN: 2,
+        fileName: 'Picture2.png',
+        originalName: 'e.png',
+        label: 'x',
+        kind: 'subject',
+        createdAt: 1
+      }
+    ]
+    const [system] = buildStage2Messages(BEATS, ENTITIES, { assets: bare })
+    expect(system.content).not.toContain('参考素材说明')
+  })
+
+  it('★ 最终提示词（派生字段 + composeSegmentText）里绝不含素材说明', () => {
+    const entityById = new Map(ENTITIES.map((e) => [e.id, e]))
+    const fields = deriveFields(DEFAULT_FIELD_SCHEMA, BEATS, {}, {
+      settings: DEFAULT_SETTINGS,
+      entityById
+    })
+    const finalText = composeSegmentText(DEFAULT_FIELD_SCHEMA, fields)
+    // 说明只作为「只读上下文」出现在模型输入里，绝不进入最终交付的提示词
+    expect(finalText).not.toContain(DESC)
+    expect(finalText).not.toContain('撑着油纸伞')
   })
 })

@@ -12,6 +12,7 @@ import {
 import { buildAdviceMessages } from '@/core/llm/advice'
 import { chunkBy, splitStory } from '@/domain/chunk'
 import { useProviderStore } from './provider'
+import { useRegistryStore } from './registry'
 import type {
   AdviceBeatPatch,
   AdviceEntityPatch,
@@ -369,41 +370,57 @@ export const usePipelineStore = defineStore('pipeline', () => {
             ? `阶段一：正在拆解第 ${i + 1}/${chunks.length} 批（第 ${chunk.paraFrom}~${chunk.paraTo} 段）…`
             : '阶段一：正在拆解分镜并登记实体…'
 
-        const data = await retryOnce(() =>
-          provider.callJson<{
-            beats?: Stage1Beat[]
-            newEntities?: Stage1NewEntity[]
-          }>(
-            buildStage1Messages(chunk.text, [...known], {
-              language: settings.workLanguage,
-              batch: {
-                index: i + 1,
-                total: chunks.length,
-                paraFrom: chunk.paraFrom,
-                paraTo: chunk.paraTo,
-                paragraphCount: chunk.paragraphs,
-                contextTitles: rawBeats
-                  .slice(-6)
-                  .map((b) => String(b?.title ?? '').trim())
-                  .filter(Boolean)
-              }
-            }),
-            { temperature: 0.35 }
+        /** 跑一次子批：解析 beats / 登记实体 / 累积到 known。空结果直接抛错 */
+        const collectBatch = async (text: string, paraFrom: number, paraTo: number): Promise<void> => {
+          const data = await retryOnce(() =>
+            provider.callJson<{
+              beats?: Stage1Beat[]
+              newEntities?: Stage1NewEntity[]
+            }>(
+              buildStage1Messages(text, [...known], {
+                language: settings.workLanguage,
+                batch: {
+                  index: i + 1,
+                  total: chunks.length,
+                  paraFrom,
+                  paraTo,
+                  paragraphCount: chunk.paragraphs,
+                  contextTitles: rawBeats
+                    .slice(-6)
+                    .map((b) => String(b?.title ?? '').trim())
+                    .filter(Boolean)
+                }
+              }),
+              { temperature: 0.35 }
+            )
           )
-        )
 
-        const batchBeats = Array.isArray(data?.beats) ? data.beats : []
-        if (!batchBeats.length) {
-          throw new Error(
-            `第 ${i + 1}/${chunks.length} 批没有返回任何片段（原文第 ${chunk.paraFrom}~${chunk.paraTo} 段），已拆出的部分不会入库`
-          )
+          const batchBeats = Array.isArray(data?.beats) ? data.beats : []
+          if (!batchBeats.length) {
+            throw new Error(
+              `第 ${i + 1}/${chunks.length} 批没有返回任何片段（原文第 ${paraFrom}~${paraTo} 段），已拆出的部分不会入库`
+            )
+          }
+          rawBeats.push(...batchBeats)
+
+          for (const e of Array.isArray(data?.newEntities) ? data.newEntities : []) {
+            rawEntities.push(e)
+            const n = String(e?.name ?? '').trim()
+            if (n) known.add(n)
+          }
         }
-        rawBeats.push(...batchBeats)
 
-        for (const e of Array.isArray(data?.newEntities) ? data.newEntities : []) {
-          rawEntities.push(e)
-          const n = String(e?.name ?? '').trim()
-          if (n) known.add(n)
+        try {
+          await collectBatch(chunk.text, chunk.paraFrom, chunk.paraTo)
+        } catch (e) {
+          // 批次太大导致模型截断/返空时，对半再拆一次（只拆一层，不再递归），
+          // 把「整轮白跑」压缩到「只剩失败的那一小段要重跑」。
+          // 子批的段落号无法精确对回原文，沿用本批范围（只用于提示与上下文标签）。
+          const halves = splitStory(chunk.text, Math.max(300, Math.round(settings.storyChunkChars / 2)))
+          if (halves.length < 2) throw e
+          for (const h of halves) {
+            await collectBatch(h.text, chunk.paraFrom, chunk.paraTo)
+          }
         }
       }
 
@@ -502,7 +519,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
               language: settings.workLanguage,
               batch: { index: i + 1, total: batches.length },
               // 只带最后几条，够对齐措辞风格就行，不要把上文越滚越长
-              contextDetails: out.slice(-3)
+              contextDetails: out.slice(-3),
+              // 参考图 / 参考音频的 desc 作为只读上下文交给模型（不进最终提示词）
+              assets: useRegistryStore().assets
             }),
             { temperature: 0.4 }
           )
@@ -541,7 +560,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
       buildSegmentFillMessages({
         ...input,
         fps: input.fps ?? settings.fps,
-        language: input.language ?? settings.workLanguage
+        language: input.language ?? settings.workLanguage,
+        // 参考图 / 参考音频的 desc 作为只读上下文交给模型（不进最终提示词）
+        assets: useRegistryStore().assets
       }),
       { temperature: 0.5 }
     )
@@ -850,7 +871,15 @@ export const usePipelineStore = defineStore('pipeline', () => {
         patches?: unknown
         unfixable?: unknown
         notes?: unknown
-      }>(buildFixMessages({ ...input, fps: input.fps ?? settings.fps }), { temperature: 0.25 })
+      }>(
+        buildFixMessages({
+          ...input,
+          fps: input.fps ?? settings.fps,
+          // 参考图 / 参考音频的 desc 作为只读上下文交给模型（不进最终提示词）
+          assets: useRegistryStore().assets
+        }),
+        { temperature: 0.25 }
+      )
 
       const validKeys = new Set(input.schema.map((f) => f.key))
       const patches: FixPatch[] = []

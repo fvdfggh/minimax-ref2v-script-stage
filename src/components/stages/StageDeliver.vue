@@ -17,13 +17,14 @@ import { useAssemblyStore } from '@/stores/assembly'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useProviderStore } from '@/stores/provider'
 import SeamPanel from '@/components/SeamPanel.vue'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
 import FixIssuesDialog from '@/components/FixIssuesDialog.vue'
 import { splitIssuesByScope } from '@/domain/rules'
 import { hasCjkOutsideD } from '@/domain/lang'
 import type { FixPatch } from '@/core/llm/prompts'
 import { composeSegmentText } from '@/domain/derive'
-import { collectEntities } from '@/domain/beats'
+import { collectEntities, isComposable } from '@/domain/beats'
 import {
   buildDirectorPack,
   buildDirectorPackZip,
@@ -78,13 +79,20 @@ const finalMode = computed(() => settings.value.workLanguage === 'en')
 /** 模型字段基于旧内容生成、现在已不可信的段数 */
 const staleCount = computed(() => views.value.filter((v) => v.stale).length)
 
-/** 不在任何段里的片段：它们不会出现在交付结果里 */
+/**
+ * 不在任何段里的片段：它们不会出现在交付结果里。
+ * 只数「可组合」的片段 —— 缺绑定的片段单独用 unboundCount 提示，
+ * 两者的修复路径不同（并入相邻段 vs 补实体绑定），混在一起会误导。
+ */
 const orphanCount = computed(() => {
   const asm = current.value
   if (!asm) return 0
   const assigned = new Set(asm.groups.flatMap((g) => g.beatIds))
-  return list.value.filter((b) => !assigned.has(b.id)).length
+  return list.value.filter((b) => isComposable(b) && !assigned.has(b.id)).length
 })
+
+/** 缺场景/说话人绑定的片段：组合时被跳过（或带着校验错误进组），交付前必须补上 */
+const unboundCount = computed(() => list.value.filter((b) => !isComposable(b)).length)
 
 /** 还在中文工作稿里、但已经混进英文的字段（本地化没做干净的信号） */
 const cjkFields = computed(() => {
@@ -123,6 +131,26 @@ const stats = computed(() => {
 const fixableCount = computed(() => {
   if (!active.value) return 0
   return splitIssuesByScope([...active.value.issues, ...globalIssues.value]).field.length
+})
+
+/** 侧边目录：段概览 + 逐字段定位（空字段标红）+ 检查区块 */
+const fieldNav = computed<SectionNavItem[]>(() => {
+  const v = active.value
+  if (!v) return []
+  const out: SectionNavItem[] = [{ id: 'dl-overview', label: '段概览' }]
+  for (const f of schema.value) {
+    const empty = !fieldValue(f.key).trim()
+    out.push({
+      id: `dl-f-${f.key}`,
+      label: f.label || f.key,
+      hint: empty ? '空' : undefined,
+      tone: empty ? 'err' : 'default'
+    })
+  }
+  if (v.issues.length) out.push({ id: 'dl-seg-check', label: '本段检查', hint: `${v.issues.length}`, tone: 'err' })
+  if (globalIssues.value.length)
+    out.push({ id: 'dl-global-check', label: '全片检查', hint: `${globalIssues.value.length}`, tone: 'warn' })
+  return out
 })
 
 /** 段字段的权威值：summary 已由 store 合并进 fields */
@@ -377,8 +405,29 @@ const packTotalSec = computed(() =>
   views.value.reduce((s, v) => s + preferredDurationSecFromFrames(v.frames), 0)
 )
 
+/* ---------------- 导出门禁：error 级问题不再静默放行 ---------------- */
+
+/** 当前交付页上全部 error 级问题（段级 + 全片级） */
+const exportErrors = computed(() => {
+  const out: Array<{ ruleId: string; message: string }> = []
+  for (const v of views.value)
+    for (const i of v.issues) if (i.level === 'error') out.push(i)
+  for (const i of globalIssues.value) if (i.level === 'error') out.push(i)
+  return out
+})
+
+const showPackConfirm = ref(false)
+
 async function exportPack() {
   if (!views.value.length) return
+  if (exportErrors.value.length) {
+    showPackConfirm.value = true
+    return
+  }
+  await doExportPack()
+}
+
+async function doExportPack() {
   packBusy.value = true
   try {
     const w = snapCanvas(packWidth.value, DEFAULT_OUTPUT_WIDTH)
@@ -519,10 +568,15 @@ function moveSchema(idx: number, dir: -1 | 1) {
 
       <!-- 字段编辑 -->
       <div style="flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column">
-        <div class="scroll-pane" style="flex: 1; padding: 16px">
+        <div style="flex: 1; min-height: 0; position: relative; display: flex">
+        <div class="scroll-pane" id="dl-fields" style="flex: 1; padding: 16px">
         <n-alert v-if="orphanCount" type="error" :bordered="false" style="margin-bottom: 12px">
           有 {{ orphanCount }} 个片段不在任何段里，不会出现在交付结果里。
           去「③ 组合与缝合」把它们并入相邻段。
+        </n-alert>
+        <n-alert v-if="unboundCount" type="error" :bordered="false" style="margin-bottom: 12px">
+          有 {{ unboundCount }} 个片段缺场景/说话人绑定，无法正常参与组合（组合时被跳过，或带着
+          「未指定场景」错误留在段里），交付结果不可信。回「② 细节填充」补好绑定，再回「③」重新组合。
         </n-alert>
         <n-alert v-if="staleCount" type="warning" :bordered="false" style="margin-bottom: 12px">
           有 {{ staleCount }} 段的模型字段是在旧内容上生成的，上游片段或实体改过之后已不可信。
@@ -566,7 +620,7 @@ function moveSchema(idx: number, dir: -1 | 1) {
         </n-alert>
 
         <template v-if="active">
-          <div class="panel" style="margin-bottom: 14px">
+          <div id="dl-overview" class="panel" style="margin-bottom: 14px">
             <div class="panel-head">
               <div class="row" style="gap: 8px">
                 <span>seg{{ String(activeSegment + 1).padStart(2, '0') }}</span>
@@ -626,7 +680,7 @@ function moveSchema(idx: number, dir: -1 | 1) {
             </div>
           </div>
 
-          <div v-for="f in schema" :key="f.key" class="field-card">
+          <div v-for="f in schema" :key="f.key" :id="'dl-f-' + f.key" class="field-card">
             <div class="field-head">
               <div class="row" style="gap: 8px; flex-wrap: wrap">
                 <span class="mono" style="font-weight: 600">{{ f.key }}</span>
@@ -672,7 +726,7 @@ function moveSchema(idx: number, dir: -1 | 1) {
             </div>
           </div>
 
-          <div v-if="active.issues.length" class="stack" style="gap: 4px; margin-top: 16px">
+          <div v-if="active.issues.length" id="dl-seg-check" class="stack" style="gap: 4px; margin-top: 16px">
             <div style="font-weight: 600; font-size: 13px">本段检查</div>
             <div
               v-for="(i, k) in active.issues"
@@ -686,13 +740,15 @@ function moveSchema(idx: number, dir: -1 | 1) {
           </div>
         </template>
 
-        <div v-if="globalIssues.length" class="stack" style="gap: 4px; margin-top: 20px">
+        <div v-if="globalIssues.length" id="dl-global-check" class="stack" style="gap: 4px; margin-top: 20px">
           <div style="font-weight: 600; font-size: 13px">全片检查</div>
           <div v-for="(i, k) in globalIssues" :key="k" class="issue" :class="i.level">
             <span class="mono" style="opacity: 0.7">{{ i.ruleId }}</span>
             <span>{{ i.message }}</span>
           </div>
         </div>
+        </div>
+        <SectionNav v-if="fieldNav.length >= 2" title="本段字段" container="#dl-fields" :items="fieldNav" />
         </div>
       </div>
     </div>
@@ -772,6 +828,46 @@ function moveSchema(idx: number, dir: -1 | 1) {
           resize: vertical;
         "
       />
+    </n-modal>
+
+    <n-modal
+      v-model:show="showPackConfirm"
+      preset="card"
+      title="交付页还有校验错误"
+      style="max-width: 640px"
+    >
+      <n-alert type="error" :bordered="false" style="margin-bottom: 12px">
+        有 {{ exportErrors.length }} 个 error 级问题（帧数超限 / 未对齐 / 参考图缺失等）。
+        直接导出的话，MiniMax 导入端可能静默降级（参考图槽位被清空、段退化成 t2v）。
+      </n-alert>
+      <div style="max-height: 240px; overflow: auto">
+        <div
+          v-for="(i, k) in exportErrors.slice(0, 10)"
+          :key="k"
+          class="issue error"
+        >
+          <span class="mono" style="opacity: 0.7">{{ i.ruleId }}</span>
+          <span>{{ i.message }}</span>
+        </div>
+        <div v-if="exportErrors.length > 10" class="muted" style="font-size: 12px; margin-top: 4px">
+          … 还有 {{ exportErrors.length - 10 }} 条
+        </div>
+      </div>
+      <template #footer>
+        <div class="row" style="justify-content: flex-end; gap: 8px">
+          <n-button @click="showPackConfirm = false">返回修复</n-button>
+          <n-button
+            type="warning"
+            :loading="packBusy"
+            @click="
+              showPackConfirm = false
+              void doExportPack()
+            "
+          >
+            仍然导出
+          </n-button>
+        </div>
+      </template>
     </n-modal>
 
     <n-modal v-model:show="showSchema" preset="card" title="字段配置" style="max-width: 820px">

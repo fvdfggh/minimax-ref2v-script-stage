@@ -19,6 +19,7 @@ import os
 import re
 import shutil
 import tempfile
+import time
 import zipfile
 from datetime import datetime
 from pathlib import Path
@@ -148,8 +149,30 @@ class Workspace:
         self._reindex_project(project)
 
     def delete_project(self, project_id: str) -> None:
+        """删除项目目录。
+
+        必须"真删干净才算数"：先反复 rmtree（Windows 上文件句柄/占用
+        会短暂锁住目录），确认目录彻底消失后才更新索引。删不掉就抛错，
+        绝不"索引清了、目录留着"——那会留下幽灵项目（列表里没了，
+        磁盘还占着，``GET /projects/<id>`` 还能 200 读回）。
+        """
         pid = self._pid(project_id)
-        shutil.rmtree(self.project_dir(pid), ignore_errors=True)
+        target = self.project_dir(pid)
+        last_err: Exception | None = None
+        for attempt in range(5):
+            try:
+                shutil.rmtree(target)
+                last_err = None
+                break
+            except OSError as exc:
+                last_err = exc
+                if not target.exists():
+                    break
+                time.sleep(0.1 * (attempt + 1))
+        if target.exists():
+            raise WorkspaceError(
+                f"无法彻底删除项目 {pid}（目录被占用）：{last_err}"
+            )
         self._write_index([r for r in self.list_index() if r.get("id") != pid])
 
     # ------------------------------ 集合 ------------------------------

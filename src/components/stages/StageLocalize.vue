@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
-import { NAlert, NButton, NInput, NProgress, NSelect, NTag, useMessage } from 'naive-ui'
+import { NAlert, NButton, NInput, NModal, NProgress, NSelect, NTag, useMessage } from 'naive-ui'
 import { useProjectStore } from '@/stores/project'
 import { useBeatStore } from '@/stores/beats'
 import { useRegistryStore } from '@/stores/registry'
 import { useAssemblyStore, type SegmentView } from '@/stores/assembly'
 import { usePipelineStore, type SegmentLocalizeTask } from '@/stores/pipeline'
 import { useProviderStore } from '@/stores/provider'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
 import { hasCjkOutsideD } from '@/domain/lang'
 import type { Beat, Entity, ID } from '@/domain/types'
@@ -24,6 +25,24 @@ const busy = ref(false)
 const showGlossary = ref(true)
 const expanded = ref<ID | null>(null)
 const failed = ref<Record<string, string>>({})
+
+/**
+ * 通用确认框（Promise 化）：runAll 流程中途也能停下来等用户决定，
+ * 而不是静默抹掉手工改过的内容。
+ */
+const confirmState = ref<{ message: string; resolve: (ok: boolean) => void } | null>(null)
+
+function confirmAction(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    confirmState.value = { message, resolve }
+  })
+}
+
+function onConfirm(ok: boolean) {
+  const st = confirmState.value
+  confirmState.value = null
+  st?.resolve(ok)
+}
 
 const settings = computed(() => project.settings)
 const schema = computed(() => project.fieldSchema)
@@ -109,6 +128,31 @@ const progressPercent = computed(() => {
   const total = glossaryStats.value.total + segStats.value.total
   if (!total) return 0
   return Math.round(((glossaryStats.value.done + segStats.value.done) / total) * 100)
+})
+
+/** 侧边目录：词条表三大块 + 逐段定位 */
+const navItems = computed<SectionNavItem[]>(() => {
+  const out: SectionNavItem[] = []
+  if (showGlossary.value) {
+    const ents = pendingEntities.value.length
+    const bts = pendingBeats.value.length
+    out.push({ id: 'lo-g-ents', label: '词条 · 实体', hint: ents ? `${ents}待翻` : '完成', tone: ents ? 'warn' : 'ok' })
+    out.push({ id: 'lo-g-beats', label: '词条 · 片段', hint: bts ? `${bts}待翻` : '完成', tone: bts ? 'warn' : 'ok' })
+  } else {
+    out.push({ id: 'lo-glossary', label: '词条表（已收起）' })
+  }
+  const todo = segStats.value.todo
+  out.push({ id: 'lo-seg-head', label: '段字段', hint: todo ? `${todo}段待翻` : '完成', tone: todo ? 'warn' : 'ok' })
+  views.value.forEach((v, i) => {
+    const pending = pendingFields(v).length
+    out.push({
+      id: `lo-g-${v.group.id}`,
+      label: `seg${String(i + 1).padStart(2, '0')}`,
+      hint: failed.value[v.group.id] ? '失败' : pending ? `缺${pending}` : '已英文化',
+      tone: failed.value[v.group.id] ? 'err' : pending ? 'warn' : 'ok'
+    })
+  })
+  return out
 })
 
 /* --------------------------- 动作 --------------------------- */
@@ -225,10 +269,37 @@ async function localizeSegments(targets: SegmentView[], label: string) {
   }
 }
 
-/** 切到英文终稿：清掉被锁定的派生字段，让引擎用英文词条重新渲染 */
+/**
+ * 切到英文终稿：清掉被锁定的派生字段，让引擎用英文词条重新渲染。
+ * 但「手改锁定」过的派生字段是人工成果，切换会直接抹掉 —— 先确认。
+ */
 async function applyEnglish() {
   const pid = project.currentId
   if (!pid) return
+
+  const locked = views.value
+    .map((v) => ({
+      index: views.value.findIndex((x) => x.group.id === v.group.id) + 1,
+      keys: assembly.lockedKeys(v.group.id).filter((k) => derivedKeys.value.includes(k))
+    }))
+    .filter((x) => x.keys.length)
+
+  if (locked.length) {
+    const detail = locked
+      .slice(0, 5)
+      .map((x) => `seg${String(x.index).padStart(2, '0')}（${x.keys.join('/')}）`)
+      .join('，')
+    const ok = await confirmAction(
+      `${locked.length} 段存在「手改锁定」的派生字段（${detail}${locked.length > 5 ? '…' : ''}）。` +
+        '切换到英文终稿会清空这些锁定，由引擎用英文词条重新渲染，手工改动不会保留。' +
+        '要继续吗？（想保留就先切回自动或手动备份这些字段）'
+    )
+    if (!ok) {
+      message.warning('已取消切换，手工锁定的字段保持不变')
+      return
+    }
+  }
+
   const keys = derivedKeys.value
   if (keys.length) {
     for (const v of views.value) await assembly.clearFields(pid, v.group.id, keys)
@@ -387,7 +458,8 @@ function fieldLabel(key: string): string {
       </div>
     </div>
 
-    <div class="scroll-pane" style="flex: 1; padding: 16px">
+    <div style="flex: 1; min-height: 0; position: relative; display: flex">
+    <div class="scroll-pane" id="lo-list" style="flex: 1; padding: 16px">
       <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">
         {{ pipeline.error }}
       </n-alert>
@@ -407,7 +479,7 @@ function fieldLabel(key: string): string {
       </n-alert>
 
       <!-- ① 词条表 -->
-      <div class="panel" style="padding: 12px 14px; margin-bottom: 12px">
+      <div id="lo-glossary" class="panel" style="padding: 12px 14px; margin-bottom: 12px">
         <div class="row-between" style="gap: 10px">
           <div class="row" style="gap: 8px">
             <n-button size="tiny" quaternary @click="showGlossary = !showGlossary">
@@ -430,7 +502,7 @@ function fieldLabel(key: string): string {
         </div>
 
         <div v-if="showGlossary" class="stack" style="gap: 12px; margin-top: 12px">
-          <div>
+          <div id="lo-g-ents">
             <div class="muted" style="font-size: 12px; margin-bottom: 6px">
               实体名 / 音色 / 外观 —— 音色描述必须跨段逐字一致，这里定稿后全片复用
             </div>
@@ -487,7 +559,7 @@ function fieldLabel(key: string): string {
             </div>
           </div>
 
-          <div>
+          <div id="lo-g-beats">
             <div class="muted" style="font-size: 12px; margin-bottom: 6px">
               片段标题 / 运镜 / 画面 —— 这些会直接进 detailed_description 的镜头行
             </div>
@@ -546,7 +618,7 @@ function fieldLabel(key: string): string {
       />
 
       <!-- ② 段字段 -->
-      <div class="panel" style="padding: 12px 14px">
+      <div id="lo-seg-head" class="panel" style="padding: 12px 14px">
         <div class="row-between" style="gap: 10px; flex-wrap: wrap">
           <div class="row" style="gap: 8px">
             <span style="font-weight: 600">② 段字段</span>
@@ -586,7 +658,7 @@ function fieldLabel(key: string): string {
         </div>
 
         <div class="stack" style="gap: 8px; margin-top: 12px">
-          <div v-for="(v, i) in views" :key="v.group.id" class="panel" style="padding: 10px 12px">
+          <div v-for="(v, i) in views" :key="v.group.id" :id="'lo-g-' + v.group.id" class="panel" style="padding: 10px 12px">
             <div class="row-between" style="gap: 10px">
               <div class="row" style="gap: 8px; min-width: 0">
                 <span style="font-weight: 600">{{ segLabel(i) }}</span>
@@ -674,5 +746,19 @@ function fieldLabel(key: string): string {
         </div>
       </div>
     </div>
+    <SectionNav title="目录" container="#lo-list" :items="navItems" />
+    </div>
+
+    <n-modal
+      :show="!!confirmState"
+      preset="dialog"
+      title="确认"
+      positive-text="继续"
+      negative-text="取消"
+      @positive-click="onConfirm(true)"
+      @negative-click="onConfirm(false)"
+    >
+      {{ confirmState?.message }}
+    </n-modal>
   </div>
 </template>

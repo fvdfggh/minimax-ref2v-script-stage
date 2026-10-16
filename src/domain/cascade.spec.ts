@@ -9,12 +9,15 @@ function beat(id: string, order: number, patch: Partial<Beat> = {}): Beat {
     order,
     kind: patch.kind ?? 'action',
     title: patch.title ?? id,
+    titleEn: patch.titleEn,
     dialogue: patch.dialogue,
     entities: patch.entities ?? [],
     speakerId: patch.speakerId,
     focusEntityId: patch.focusEntityId,
     direction: patch.direction,
+    directionEn: patch.directionEn,
     visualDesc: patch.visualDesc,
+    visualDescEn: patch.visualDescEn,
     manualFrames: false,
     sceneId: patch.sceneId,
     locked: false,
@@ -177,6 +180,15 @@ describe('级联：段内容指纹', () => {
     expect(segmentSourceHash(base, [{ ...ents[0], textDesc: '深色长袍' }])).not.toBe(h)
     expect(segmentSourceHash(base, [{ ...ents[0], pictureN: 9 }])).not.toBe(h)
     expect(segmentSourceHash(base, [{ ...ents[0], name: 'Chuci' }])).not.toBe(h)
+  })
+
+  it('★ 英文词条变了同样要变指纹（英文终稿下派生字段用英文词条渲染）', () => {
+    const h = segmentSourceHash(base, ents)
+    expect(segmentSourceHash(base, [{ ...ents[0], nameEn: 'Chuci' }])).not.toBe(h)
+    expect(segmentSourceHash(base, [{ ...ents[0], voiceDescEn: 'a young male voice' }])).not.toBe(h)
+    expect(segmentSourceHash(base, [{ ...ents[0], textDescEn: 'dark robe, pale skin' }])).not.toBe(h)
+    const withEn = [beat('a', 0, { title: '动作', sceneId: 'e1', entities: ['e1'], titleEn: 'Action shot' })]
+    expect(segmentSourceHash(withEn, ents)).not.toBe(h)
   })
 
   it('片段顺序变了也算变了', () => {

@@ -66,6 +66,9 @@ generated-images/
 *.temp
 .cache/
 
+# 前后端联合集成测试的临时数据目录（可手动删除）
+.itest-data/
+
 # 后端运行时日志（start-backend.bat / 手动重定向产生）
 server.err
 server.out

@@ -55,19 +55,39 @@ export interface Entity {
   /** 阶段⑤本地化产物：英文外观描述 */
   textDescEn?: string | null
   note?: string
+  /** 溯源：由哪个实体「注入/提升」复制而来（大主体→集 或 集→大主体）。null/缺省 = 原生 */
+  sourceId?: ID
   createdAt: number
   updatedAt: number
 }
 
+/**
+ * 素材用途：
+ *   subject —— 主体的参考图，占 <Picture N>，进导演包 reference 槽
+ *   scene   —— 片段的场景图，pictureN 固定为 0，不进 reference 槽、不打包，仅本地查看
+ *   other   —— 其它 / 未分类
+ */
+export type AssetKind = 'subject' | 'scene' | 'other'
+
 export interface Asset {
   id: ID
   projectId: ID
-  /** 全局素材编号 Picture N */
+  /** 全局素材编号 Picture N；场景图为 0（不占 reference 槽） */
   pictureN: number
   fileName: string
   originalName: string
   label: string
   blob?: Blob
+  /** 素材用途，缺省视为 subject（历史数据兼容） */
+  kind?: AssetKind
+  /** 归属：subject → entity.id；scene → beat.id */
+  refId?: ID
+  /**
+   * 素材内容说明（图片 / 音频通用）：描述这张参考图 / 这段音频里到底是什么。
+   * 只作为「只读上下文」交给大模型，帮它理解 <Picture N> 参考的内容，
+   * 从而写出更准确的字段；但【不会】写进最终生成的提示词 / 导演包。
+   */
+  desc?: string
   createdAt: number
 }
 
@@ -451,16 +471,38 @@ export const DEFAULT_FIELD_SCHEMA: FieldSchema[] = [
   }
 ]
 
+/**
+ * 两级结构：
+ *   series  —— 顶层「项目/系列」：容器，管理它下面的若干「集」+ 一批「大主体（全局主体）」
+ *   episode —— 「集」：真正跑流程的工作台（故事→片段→组合→…→导演包），独立打包
+ * 一个 series 由若干 episode 组成；全局主体存在 series 自己的实体表里，可注入到某集。
+ */
+export type ProjectKind = 'series' | 'episode'
+
 export interface Project {
   id: ID
   name: string
-  /** 故事原文（阶段一输入） */
+  /** 层级：缺省按 episode 处理（历史数据兼容） */
+  kind?: ProjectKind
+  /** episode → 所属 series.id */
+  seriesId?: ID
+  /** series → 其下各集 id（有序，即集列表的顺序） */
+  episodeIds?: ID[]
+  /** 故事原文（阶段一输入，仅 episode 用） */
   story: string
   stage: ProjectStage
   settings: ProjectSettings
   fieldSchema: FieldSchema[]
   createdAt: number
   updatedAt: number
+}
+
+export function isSeries(p: Pick<Project, 'kind'>): boolean {
+  return p.kind === 'series'
+}
+
+export function isEpisode(p: Pick<Project, 'kind'>): boolean {
+  return (p.kind ?? 'episode') === 'episode'
 }
 
 /* ------------------------------------------------------------------ *
@@ -473,6 +515,12 @@ export interface Provider {
   baseUrl: string
   apiKey: string
   model: string
+  /**
+   * 图片生成 / 编辑用的模型名。
+   * 留空则回退到 model（很多 OpenAI 兼容服务用同一个 model 出图）。
+   * 例如 OpenAI 填 gpt-image-1 / dall-e-3，MiniMax 填其 image 模型名。
+   */
+  imageModel?: string
   /** CORS 兜底：形如 https://proxy.example/?url= */
   proxyPrefix?: string
   /** 仅本次会话使用 Key（不落库） */

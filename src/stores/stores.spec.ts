@@ -1,8 +1,8 @@
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { isReactive } from 'vue'
-import { db } from '@/db'
+import { db, setDbImpl, setKvImpl } from '@/db'
+import { createMemoryDb, createMemoryKv } from '@/db/memory'
 import { DEFAULT_SETTINGS } from '@/domain/types'
 import { isAligned } from '@/domain/frames'
 import { beatFrames } from '@/domain/timing'
@@ -25,8 +25,8 @@ const DRAFTS: Stage1Beat[] = [
 ]
 
 async function freshDb() {
-  await db.delete?.()
-  await db.open?.()
+  setDbImpl(createMemoryDb())
+  setKvImpl(createMemoryKv())
 }
 
 describe('stores 端到端（真实 IndexedDB 语义）', () => {
@@ -167,7 +167,7 @@ describe('stores 端到端（真实 IndexedDB 语义）', () => {
     expect(() => beats.ordered.filter((x) => x.entities.length)).not.toThrow()
   })
 
-  it('写入 IndexedDB 的记录必须是可结构化克隆的普通对象', async () => {
+  it('写入数据库的记录必须是可结构化克隆的普通对象', async () => {
     const { beats } = await seed()
     const row = await db.beats.toArray()
     expect(row.length).toBeGreaterThan(0)

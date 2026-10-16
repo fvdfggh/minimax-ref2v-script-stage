@@ -8,13 +8,16 @@ import {
   autoSplitParts,
   entityIdsOf,
   isComposable,
+  isSplitPair,
   mergeBeats,
   newBeat,
   normalizeBeat,
   resolveSubjectId,
-  splitBeat
+  splitBeat,
+  splitPieceMap
 } from './beats'
 import { analyzeSeam } from './seam'
+import { makeEntityResolver } from './beats'
 import { assemble, defaultStrategy } from './assembler'
 import { deriveDetailedDescription, deriveSubjectDefinitions, makeSeeders } from './derive'
 
@@ -157,6 +160,39 @@ describe('片段拆分', () => {
     const next = splitBeat([b], b.id, S)
     expect(next.length).toBeGreaterThan(1)
     expect(next.map((x) => x.dialogue).join('')).toBe(text)
+  })
+
+  it('splitPieceMap：只标"被迫拆分"的分片，自然切分的镜头不标', () => {
+    // 自然镜头（无血缘）
+    const natural = beat({ title: '空镜', kind: 'action', estFrames: 20, manualFrames: true })
+    // 一个超长动作被迫拆成 3 片
+    const long = beat({ title: '追逐', kind: 'action', estFrames: 150, manualFrames: true })
+    const split = splitBeat([long], long.id, S, autoSplitParts(long, S))
+    const all = [natural, ...split]
+
+    const map = splitPieceMap(all)
+    // 自然镜头不在 map 里
+    expect(map.has(natural.id)).toBe(false)
+    // 拆分出的每一片都在 map 里，且 total 一致
+    expect(split.every((x) => map.has(x.id))).toBe(true)
+    const total = map.get(split[0].id)!.total
+    expect(total).toBe(split.length)
+    expect(total).toBeGreaterThan(1)
+    // index 是 1..total 的连续序号
+    const indices = split.map((x) => map.get(x.id)!.index).sort((a, b) => a - b)
+    expect(indices).toEqual(Array.from({ length: total }, (_, i) => i + 1))
+  })
+
+  it('isSplitPair：同一血缘的相邻两段为真，跨镜头/自然镜头为假', () => {
+    const long = beat({ title: '追逐', kind: 'action', estFrames: 150, manualFrames: true })
+    const split = splitBeat([long], long.id, S, autoSplitParts(long, S))
+    const [a, b] = split
+    // 同血缘相邻 -> 真
+    expect(isSplitPair(a, b)).toBe(true)
+    // 自然镜头夹在中间 -> 假
+    const natural = beat({ title: '空镜', kind: 'action', estFrames: 20, manualFrames: true })
+    expect(isSplitPair(natural, b)).toBe(false)
+    expect(isSplitPair(a, natural)).toBe(false)
   })
 
   it('合并可撤回拆分', () => {
@@ -461,5 +497,69 @@ describe('字段派生', () => {
     })
     expect(zh).toMatch(/[\u4e00-\u9fff]/)
     expect(zh).toContain('speaking with')
+  })
+})
+
+/* --------------------------- 实体名解析器 --------------------------- */
+
+describe('makeEntityResolver', () => {
+  const list = [ent({ name: '楚辞' }), ent({ name: '楚辞子' }), ent({ name: '九幽毒渊', type: 'scene' })]
+
+  it('精确匹配永远优先，不会被更长的模糊项抢走', () => {
+    const r = makeEntityResolver(list)('楚辞')
+    expect(r.match).toBe('exact')
+    expect(r.id).toBe('楚辞')
+  })
+
+  it('无精确匹配时走模糊，并通过回调留痕', () => {
+    const seen: Array<[string, string]> = []
+    const r = makeEntityResolver(list, (raw, hit) => seen.push([raw, hit]))('楚辞子子')
+    expect(r.match).toBe('fuzzy')
+    expect(r.id).toBe('楚辞子')
+    expect(seen).toEqual([['楚辞子子', '楚辞子']])
+  })
+
+  it('完全没命中时返回 none 且不绑定', () => {
+    const r = makeEntityResolver(list)('不存在的人')
+    expect(r.match).toBe('none')
+    expect(r.id).toBeUndefined()
+  })
+
+  it('空串 / 纯空白一律 none', () => {
+    expect(makeEntityResolver(list)('').match).toBe('none')
+    expect(makeEntityResolver(list)('   ').match).toBe('none')
+  })
+
+  it('前后空白被 trim 后参与精确匹配', () => {
+    const r = makeEntityResolver(list)('  楚辞  ')
+    expect(r.match).toBe('exact')
+    expect(r.id).toBe('楚辞')
+  })
+
+  it('回调只在模糊命中时触发，exact / none 都不回调', () => {
+    let calls = 0
+    // makeEntityResolver 返回的是"解析器函数"，要先拿到再逐个调用
+    const resolver = makeEntityResolver(list, () => calls++)
+    resolver('楚辞') // exact
+    resolver('不存在的人') // none
+    expect(calls).toBe(0)
+    resolver('楚辞子子') // fuzzy
+    expect(calls).toBe(1)
+  })
+
+  it('多个模糊候选同时命中时取"长度差最小"的，与列表顺序无关', () => {
+    // 故意把更长的候选放在更靠前的位置：
+    // "楚辞子子" 与 "楚辞"(差2)、"楚辞子"(差1) 都满足包含关系，
+    // 旧实现会取列表里第一个，新实现必须取更贴近的 "楚辞子"
+    const resolver = makeEntityResolver(list)
+    const hit = resolver('楚辞子子')
+    expect(hit.id).toBe('楚辞子')
+    expect(hit.match).toBe('fuzzy')
+  })
+
+  it('空注册表下任何输入都 none', () => {
+    const empty = makeEntityResolver([])
+    expect(empty('楚辞').match).toBe('none')
+    expect(empty('anything').match).toBe('none')
   })
 })

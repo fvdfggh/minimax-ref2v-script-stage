@@ -35,10 +35,16 @@ const tab = ref<'split' | 'enrich' | 'assemble' | 'complete' | 'localize' | 'del
 const showRegistry = ref(false)
 const showProvider = ref(false)
 const booted = ref(false)
+const backendReady = ref(false)
 
 const projectId = computed(() => String(route.params.id ?? ''))
 
 const projectName = computed(() => project.current?.name ?? '')
+
+// 本集属于哪个项目(系列)；有则回到项目页，否则回项目列表
+const backTo = computed(() =>
+  project.current?.seriesId ? `/s/${project.current.seriesId}` : '/'
+)
 
 const tabs = [
   { key: 'split', label: '① 拆解' },
@@ -51,9 +57,17 @@ const tabs = [
 
 async function boot() {
   await storage.init()
+  backendReady.value = storage.ready
+  // 连不上后端就直接拦住，不读库（后端是唯一数据源）
+  if (!storage.ready) {
+    booted.value = true
+    return
+  }
   await project.loadAll()
+  // 让 current 与路由的集 id 一致（而不是停留在 kv 里的旧值）
+  await project.select(projectId.value)
   if (!project.current) {
-    message.warning('项目不存在')
+    message.warning('集不存在')
     router.replace('/')
     return
   }
@@ -67,6 +81,11 @@ async function boot() {
   ])
   tab.value = project.current.stage === 'deliver' ? 'deliver' : project.current.stage
   booted.value = true
+}
+
+async function retryConnect() {
+  const ok = await storage.connect()
+  if (ok) location.reload()
 }
 
 onMounted(boot)
@@ -102,7 +121,7 @@ async function renumberIfNeeded() {
       "
     >
       <div class="row" style="gap: 14px; min-width: 0">
-        <n-button quaternary size="small" @click="router.push('/')">← 项目</n-button>
+        <n-button quaternary size="small" @click="router.push(backTo)">← 项目</n-button>
         <div style="font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis">
           {{ projectName }}
         </div>
@@ -143,7 +162,27 @@ async function renumberIfNeeded() {
     </header>
 
     <main style="flex: 1; min-height: 0; overflow: hidden">
-      <n-spin v-if="!booted" style="height: 100%" content-style="height:100%">
+      <div
+        v-if="!backendReady"
+        style="height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px"
+      >
+        <div class="panel" style="padding: 40px 28px; text-align: center; max-width: 460px">
+          <n-spin v-if="storage.checking" size="large" style="margin-bottom: 12px" />
+          <template v-else>
+            <div style="font-size: 16px; font-weight: 600; margin-bottom: 8px">后端未连接</div>
+            <div class="muted" style="font-size: 13px; line-height: 1.9">
+              连不上 Python 后端，暂时打不开这个项目。请先在项目目录运行
+              <code>python server/app.py</code>，然后点重试。
+            </div>
+            <div class="row" style="justify-content: center; gap: 8px; margin-top: 14px">
+              <n-button quaternary size="small" @click="router.push('/')">返回项目列表</n-button>
+              <n-button type="primary" size="small" @click="retryConnect">重试连接</n-button>
+            </div>
+          </template>
+        </div>
+      </div>
+
+      <n-spin v-else-if="!booted" style="height: 100%" content-style="height:100%">
         <div style="height: 100%" />
       </n-spin>
 

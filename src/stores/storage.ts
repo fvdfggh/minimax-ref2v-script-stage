@@ -6,16 +6,16 @@ import {
   backendSetDataDir,
   setBackendBase
 } from '@/core/backend'
-import { storageMode, useBackend, useLocal } from '@/db'
+import { storageMode, useBackend } from '@/db'
 
 /* ------------------------------------------------------------------ *
- * 存储模式
+ * 存储
  *
- *   local   —— 浏览器 IndexedDB。开箱即用，但清缓存就没了
- *   backend —— Python 后端写数据目录。能备份、能进版本管理、素材是真文件
- *
- * 新装默认 local，不动已有数据；只有用户明确选了目录才切到 backend。
- * 后端没起就自动退回 local，不让页面卡在"打不开"的状态。
+ * 数据统一由 Python 后端管理，不再有"浏览器本地模式"。
+ * 启动时探活后端：
+ *   - 连上  -> 进入可用状态（ready=true），一切读写走后端
+ *   - 连不上 -> ready=false，由页面给出"后端未启动"的拦截，而不是
+ *               悄悄退回浏览器（浏览器已不再存放任何数据）。
  * ------------------------------------------------------------------ */
 
 const STORAGE_KEY = 'scriptstage.storage'
@@ -27,18 +27,15 @@ export const useStorageStore = defineStore('storage', () => {
   const online = ref(false)
   const checking = ref(false)
   const lastError = ref('')
-  /** 用户是否主动选过后端（决定启动时是否自动连） */
-  const preferBackend = ref(false)
 
-  const mode = ref<'local' | 'backend'>('local')
-  const isBackend = computed(() => mode.value === 'backend')
+  const mode = ref<'backend'>('backend')
+  const isBackend = computed(() => true)
+  /** 后端是否已成功连接（页面据此决定放行渲染还是给出拦截） */
+  const ready = ref(false)
 
   function persist(): void {
     try {
-      localStorage.setItem(
-        STORAGE_KEY,
-        JSON.stringify({ baseUrl: baseUrl.value, preferBackend: preferBackend.value })
-      )
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({ baseUrl: baseUrl.value }))
     } catch {
       /* 隐私模式下写不了，忽略 */
     }
@@ -48,9 +45,8 @@ export const useStorageStore = defineStore('storage', () => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return
-      const data = JSON.parse(raw) as { baseUrl?: string; preferBackend?: boolean }
+      const data = JSON.parse(raw) as { baseUrl?: string }
       if (data.baseUrl) baseUrl.value = data.baseUrl
-      preferBackend.value = data.preferBackend === true
     } catch {
       /* 坏值就用默认 */
     }
@@ -82,41 +78,42 @@ export const useStorageStore = defineStore('storage', () => {
     }
   }
 
+  function enableBackend(): void {
+    useBackend(baseUrl.value)
+    mode.value = 'backend'
+    persist()
+  }
+
+  /**
+   * 连接后端。成功则启用后端存储并置 ready；失败保持 ready=false。
+   * 幂等入口 init() 与"重试"按钮都走这里。
+   */
+  async function connect(): Promise<boolean> {
+    const ok = await probe()
+    if (ok) {
+      enableBackend()
+      ready.value = true
+    } else {
+      ready.value = false
+    }
+    return ok
+  }
+
   let initialized = false
 
   /**
-   * 幂等：页面里有多个入口都会调它，但存储模式只能定一次，
+   * 幂等：页面里有多个入口都会调它，但存储只能定一次，
    * 而且必须在任何 store 读数据之前定下来。
    */
   async function init(): Promise<void> {
     if (initialized) return
     initialized = true
     restore()
-    if (!preferBackend.value) return
-    if (await probe()) enableBackend()
-  }
-
-  function enableBackend(): void {
-    useBackend(baseUrl.value)
-    mode.value = 'backend'
-    preferBackend.value = true
-    persist()
-  }
-
-  function enableLocal(): void {
-    useLocal()
-    mode.value = 'local'
-    persist()
+    await connect()
   }
 
   async function setDataDir(dir: string): Promise<void> {
     dataDir.value = await backendSetDataDir(dir)
-  }
-
-  /** 已连后端就用它，否则退回浏览器 */
-  function ensureBackendOrLocal(): void {
-    if (online.value) enableBackend()
-    else enableLocal()
   }
 
   return {
@@ -126,15 +123,14 @@ export const useStorageStore = defineStore('storage', () => {
     online,
     checking,
     lastError,
-    preferBackend,
     mode,
     isBackend,
+    ready,
     probe,
     init,
+    connect,
     enableBackend,
-    enableLocal,
     setDataDir,
-    ensureBackendOrLocal,
     storageMode
   }
 })

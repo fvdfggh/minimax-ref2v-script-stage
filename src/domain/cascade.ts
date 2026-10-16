@@ -34,6 +34,10 @@ export function fingerprint(text: string): string {
  * 段内容指纹：把「模型实际看到的那部分输入」压成一个短串。
  * 片段自身的字段 + 本段用到的实体词条（名字/音色/外观/参考图）都要计入，
  * 任何一项变了，段字段就不再可信。
+ *
+ * 注意：英文词条（titleEn / directionEn / visualDescEn / nameEn / voiceDescEn /
+ * textDescEn）同样要计入 —— 英文终稿模式下派生字段是用英文词条渲染的，
+ * 改了英文词条而指纹不跟着变，段字段就会悄悄停留在旧词条上。
  */
 export function segmentSourceHash(beats: Beat[], entities: Entity[]): string {
   const byId = new Map(entities.map((e) => [e.id, e]))
@@ -45,9 +49,12 @@ export function segmentSourceHash(beats: Beat[], entities: Entity[]): string {
         b.id,
         b.kind,
         b.title,
+        b.titleEn ?? '',
         b.dialogue ?? '',
         b.direction ?? '',
+        b.directionEn ?? '',
         b.visualDesc ?? '',
+        b.visualDescEn ?? '',
         b.sceneId ?? '',
         b.speakerId ?? '',
         b.focusEntityId ?? '',
@@ -67,11 +74,23 @@ export function segmentSourceHash(beats: Beat[], entities: Entity[]): string {
     const e = byId.get(id)
     if (!e) continue
     parts.push(
-      [id, e.name, e.type, e.kind, e.voiceDesc ?? '', e.textDesc ?? '', String(e.pictureN ?? '')].join('\u0001')
+      [
+        id,
+        e.name,
+        e.nameEn ?? '',
+        e.type,
+        e.kind,
+        e.voiceDesc ?? '',
+        e.voiceDescEn ?? '',
+        e.textDesc ?? '',
+        e.textDescEn ?? '',
+        String(e.pictureN ?? '')
+      ].join('\u0001')
     )
   }
 
-  return fingerprint(parts.join('\u0002'))
+  // v2：指纹纳入英文词条后的版本标记，避免和旧版指纹混淆
+  return fingerprint('v2\u0002' + parts.join('\u0002'))
 }
 
 /* --------------------------- 分组归位 --------------------------- */

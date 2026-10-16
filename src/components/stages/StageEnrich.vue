@@ -15,8 +15,16 @@ import { useBeatStore } from '@/stores/beats'
 import { useRegistryStore } from '@/stores/registry'
 import { usePipelineStore } from '@/stores/pipeline'
 import { useProviderStore } from '@/stores/provider'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
-import { BEAT_KIND_COLOR, BEAT_KIND_LABEL, beatIssueLabel } from '@/domain/beats'
+import {
+  BEAT_KIND_COLOR,
+  BEAT_KIND_LABEL,
+  beatIssueLabel,
+  isSplitPair,
+  makeEntityResolver,
+  splitPieceMap
+} from '@/domain/beats'
 import { beatFrames, secondsFromFrames } from '@/domain/timing'
 import type { Beat, Entity, ID } from '@/domain/types'
 
@@ -38,6 +46,22 @@ const enrichedCount = computed(() => list.value.filter((b) => b.enriched && b.en
 const missingCount = computed(() => list.value.filter((b) => beatIssueLabel(b)).length)
 const progress = computed(() =>
   list.value.length ? Math.round((enrichedCount.value / list.value.length) * 100) : 0
+)
+
+/** "过长被迫拆开"的分片血缘：beatId -> {index, total} */
+const splitPieces = computed(() => splitPieceMap(list.value))
+
+/** 侧边目录：逐片段定位，缺绑定的标红 */
+const beatNav = computed<SectionNavItem[]>(() =>
+  list.value.map((b, i) => {
+    const issue = beatIssueLabel(b)
+    return {
+      id: `en-b-${b.id}`,
+      label: `${i + 1} ${b.title || '（未命名）'}`,
+      hint: issue ?? '已就绪',
+      tone: issue ? 'err' : 'ok'
+    }
+  })
 )
 
 /* --------------------------- 分批填充 --------------------------- */
@@ -105,14 +129,35 @@ async function runFill() {
 
   try {
     const details = await pipeline.runStage2(targets, registry.entities, project.settings)
+    // 精确匹配优先；模糊匹配留痕提醒；没命中的不绑（该片段保持未就绪状态）
+    const fuzzyPairs: string[] = []
+    const unmatched = new Set<string>()
+    const resolveWith = makeEntityResolver(registry.entities, (raw, hit) => {
+      fuzzyPairs.push(`${raw} → ${hit}`)
+    })
     const touched = await beats.applyDetails(project.currentId!, details, (name) => {
-      const byName = registry.entities.find((e) => e.name === name)
-      if (byName) return byName.id
-      const fuzzy = registry.entities.find((e) => name.includes(e.name) || e.name.includes(name))
-      return fuzzy?.id
+      const r = resolveWith(name)
+      if (r.match === 'none' && name.trim()) unmatched.add(name.trim())
+      return r.id
     })
     emit('changed')
     message.success(`已填充 ${touched} / ${targets.length} 个片段`)
+    if (fuzzyPairs.length || unmatched.size) {
+      const bits: string[] = []
+      if (fuzzyPairs.length)
+        bits.push(
+          `${fuzzyPairs.length} 个实体名是模糊匹配（${fuzzyPairs.slice(0, 3).join('，')}${
+            fuzzyPairs.length > 3 ? '…' : ''
+          }），可能绑错，请复核`
+        )
+      if (unmatched.size)
+        bits.push(
+          `${unmatched.size} 个实体名未登记（${[...unmatched].slice(0, 4).join('，')}${
+            unmatched.size > 4 ? '…' : ''
+          }），对应片段绑定不完整`
+        )
+      message.warning(bits.join('；'))
+    }
   } catch (e) {
     message.error((e as Error).message)
   }
@@ -181,7 +226,8 @@ async function markAllEnriched() {
       @applied="emit('changed')"
     />
 
-    <div class="scroll-pane" style="flex: 1; padding: 16px">
+    <div style="flex: 1; min-height: 0; position: relative; display: flex">
+    <div class="scroll-pane" id="en-list" style="flex: 1; padding: 16px">
       <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">
         {{ pipeline.error }}
       </n-alert>
@@ -191,9 +237,19 @@ async function markAllEnriched() {
       </div>
 
       <div class="stack" style="gap: 8px">
+        <template v-for="(b, i) in list" :key="b.id">
+          <!-- 承接标记：同一镜头因过长被迫拆成的两段之间 -->
+          <div v-if="i > 0 && isSplitPair(list[i - 1], b)" class="split-connector">
+            <span class="split-connector-line" />
+            <span class="split-connector-label">
+              同一镜头承接 · 第 {{ splitPieces.get(b.id)?.index }}/{{
+                splitPieces.get(b.id)?.total
+              }} 段
+            </span>
+            <span class="split-connector-line" />
+          </div>
         <div
-          v-for="(b, i) in list"
-          :key="b.id"
+          :id="'en-b-' + b.id"
           class="panel"
           :style="{
             borderLeft: `3px solid ${BEAT_KIND_COLOR[b.kind]}`,
@@ -326,7 +382,10 @@ async function markAllEnriched() {
             </div>
           </div>
         </div>
+        </template>
       </div>
+    </div>
+    <SectionNav v-if="list.length >= 2" title="片段" container="#en-list" :items="beatNav" />
     </div>
   </div>
 </template>

@@ -7,6 +7,7 @@ import { useRegistryStore } from '@/stores/registry'
 import { useAssemblyStore, type SegmentView } from '@/stores/assembly'
 import { usePipelineStore, type SegmentFillTask } from '@/stores/pipeline'
 import { useProviderStore } from '@/stores/provider'
+import SectionNav, { type SectionNavItem } from '@/components/SectionNav.vue'
 import StageAdvice from '@/components/StageAdvice.vue'
 import { secondsFromFrames } from '@/domain/timing'
 import { formatPad } from '@/domain/frames'
@@ -83,6 +84,33 @@ const progressPercent = computed(() => {
   if (!views.value.length) return 0
   return Math.round((stats.value.done / views.value.length) * 100)
 })
+
+/** 侧边目录：逐段定位，按补全状态标色 */
+const segNav = computed<SectionNavItem[]>(() =>
+  views.value.map((v, i) => {
+    const st = statusOf(v)
+    const missing = missingOf(v).length
+    const tone: SectionNavItem['tone'] = failed.value[v.group.id]
+      ? 'err'
+      : st === 'done'
+        ? 'ok'
+        : st === 'partial' || v.stale
+          ? 'warn'
+          : 'default'
+    return {
+      id: `cp-g-${v.group.id}`,
+      label: `seg${String(i + 1).padStart(2, '0')}`,
+      hint: failed.value[v.group.id]
+        ? '失败'
+        : st === 'done'
+          ? '已补全'
+          : st === 'partial'
+            ? `缺${missing}`
+            : '待补',
+      tone
+    }
+  })
+)
 
 async function writeBack(groupId: ID, fields: Record<string, string>) {
   const pid = project.currentId
@@ -232,7 +260,8 @@ function segLabel(index: number) {
       :presets="['summary 不要重复台词原文', '某段的配乐不合适', '某段的环境声写太空了']"
     />
 
-    <div class="scroll-pane" style="flex: 1; padding: 16px">
+    <div style="flex: 1; min-height: 0; position: relative; display: flex">
+    <div class="scroll-pane" id="cp-list" style="flex: 1; padding: 16px">
       <n-alert v-if="pipeline.error" type="error" :bordered="false" style="margin-bottom: 12px">
         {{ pipeline.error }}
       </n-alert>
@@ -247,7 +276,7 @@ function segLabel(index: number) {
       </div>
 
       <div class="stack" style="gap: 8px">
-        <div v-for="(v, i) in views" :key="v.group.id" class="panel" style="padding: 10px 12px">
+        <div v-for="(v, i) in views" :key="v.group.id" :id="'cp-g-' + v.group.id" class="panel" style="padding: 10px 12px">
           <div class="row-between" style="gap: 10px">
             <div class="row" style="gap: 8px; min-width: 0">
               <span style="font-weight: 600">{{ segLabel(i) }}</span>
@@ -369,6 +398,8 @@ function segLabel(index: number) {
           </div>
         </div>
       </div>
+    </div>
+    <SectionNav v-if="views.length >= 2" title="视频段" container="#cp-list" :items="segNav" />
     </div>
   </div>
 </template>

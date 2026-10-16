@@ -8,7 +8,6 @@ import {
   type FsEntry
 } from '@/core/backend'
 import { exportWorkspace, importWorkspace } from '@/db'
-import { isBackend } from '@/db'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ (e: 'update:show', value: boolean): void }>()
@@ -91,18 +90,6 @@ async function connect(): Promise<void> {
   void openFs('')
 }
 
-function applyMode(next: 'local' | 'backend'): void {
-  if (next === 'backend' && !storage.online) {
-    message.warning('后端还没连上，先点「连接」')
-    return
-  }
-  if (next === 'backend') storage.enableBackend()
-  else storage.enableLocal()
-  // 换了数据源就得重新读一遍，否则列表还是上一个库的内容
-  message.success(next === 'backend' ? '已切到后端存储' : '已切回浏览器存储')
-  setTimeout(() => location.reload(), 400)
-}
-
 /* ---------------- 导入导出 ---------------- */
 
 async function doExport(): Promise<void> {
@@ -153,23 +140,17 @@ onMounted(() => {
   <n-modal v-model:show="show" preset="card" title="存储设置" style="max-width: 720px">
     <div class="stack" style="gap: 14px">
       <n-alert type="info" :bordered="false">
-        浏览器存储开箱即用，但清缓存就没了。切到后端后，项目会写进你选的文件夹：
-        素材是真文件，能备份、能进版本管理。
+        所有数据统一由 Python 后端管理，写进你选的文件夹：素材是真文件，能备份、能进版本管理。
       </n-alert>
 
-      <!-- 模式 -->
+      <!-- 存储 -->
       <div>
         <div class="muted" style="font-size: 12.5px; margin-bottom: 6px">当前存储</div>
-        <div class="row" style="gap: 8px">
-          <n-tag :type="isBackend() ? 'default' : 'success'" :bordered="false" size="small">
-            {{ isBackend() ? '后端目录' : '浏览器 IndexedDB' }}
-          </n-tag>
-          <n-button size="small" :disabled="isBackend()" @click="applyMode('local')">
-            用浏览器
-          </n-button>
-          <n-button size="small" type="primary" ghost :disabled="isBackend()" @click="applyMode('backend')">
-            用后端目录
-          </n-button>
+        <div class="row" style="gap: 8px; flex-wrap: wrap">
+          <n-tag type="success" :bordered="false" size="small">后端目录（Python）</n-tag>
+          <span class="muted" style="font-size: 12px">
+            不再使用浏览器本地存储；后端没起时应用会提示你启动，而不是悄悄退回浏览器。
+          </span>
         </div>
       </div>
 
@@ -268,8 +249,7 @@ onMounted(() => {
           />
         </div>
         <div class="muted" style="font-size: 12px; margin-top: 6px">
-          后端模式导出的是 zip，含素材文件；浏览器模式只能导出 JSON，
-          <span style="color: #b06a12">不含图片</span>。
+          导出的是 zip，含素材文件；导入时支持单项目 / 整库 / 旧版备份三种格式。
         </div>
       </div>
     </div>

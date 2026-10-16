@@ -44,6 +44,21 @@ function asset(pictureN: number): Asset {
   }
 }
 
+function sceneAsset(): Asset {
+  return {
+    id: 'scene0',
+    projectId: 'p1',
+    pictureN: 0,
+    fileName: 'scene_b1_12345.png',
+    originalName: 'scene.png',
+    label: '场景图',
+    blob: new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])]),
+    kind: 'scene',
+    refId: 'b1',
+    createdAt: 1
+  }
+}
+
 const seg = (patch: Partial<Parameters<typeof buildDirectorPack>[0]['segments'][number]> = {}) => ({
   id: 'g1',
   frames: 141,
@@ -240,5 +255,23 @@ describe('buildDirectorPack', () => {
     const segments = res.timeline.segments as Array<Record<string, any>>
     expect(segments[0].refs).toHaveLength(1)
     expect(segments[0].refs[0].imageFile).toBe('shared_params/Picture3.png')
+  })
+
+  it('场景图（pictureN=0, kind=scene）不进 reference 槽、不打包、不触发告警', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg()], // 默认 prompt 里有 <Picture 1>
+      assets: [asset(1), sceneAsset()]
+    })
+    // global.refs 只有真正的主体参考图
+    const globalRefs = (res.timeline.global as any).refs as Array<{ imageFile: string }>
+    expect(globalRefs).toHaveLength(1)
+    expect(globalRefs[0].imageFile).toBe('shared_params/Picture1.png')
+    // 场景图文件不写进包
+    const paths = res.entries.map((e) => e.path)
+    expect(paths).toContain('shared_params/Picture1.png')
+    expect(paths.some((p) => p.startsWith('shared_params/scene_'))).toBe(false)
+    // 不应因场景图触发任何缺素材 / 超 9 告警
+    expect(res.warnings).toHaveLength(0)
   })
 })

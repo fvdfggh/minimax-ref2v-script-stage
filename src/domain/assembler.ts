@@ -206,6 +206,9 @@ export function assemble(
 /**
  * 局部优化：若某缝合处需要黑屏兜底，
  * 尝试把边界左右挪 1~3 个 Beat，看能否消除兜底且不超帧限。
+ *
+ * 迭代多轮：修好第 k 处黑屏会改变第 k 处左边的段内容，可能让第 k-1 处
+ * 重新黑屏。单遍前向扫描修一处坏一处，这里循环到稳定（最多 3 轮，必终止）。
  */
 function refineBySeam(
   groups: Group[],
@@ -220,42 +223,49 @@ function refineBySeam(
 
   const out = groups.map((g) => ({ ...g, beatIds: [...g.beatIds] }))
 
-  for (let k = 1; k < out.length; k++) {
-    const left = out[k - 1]
-    const right = out[k]
+  for (let pass = 0; pass < 3; pass++) {
+    let changed = false
 
-    let seam = analyzeSeam(getBeats(left), getBeats(right), ctx)
-    if (!seam.blackFallback) continue
+    for (let k = 1; k < out.length; k++) {
+      const left = out[k - 1]
+      const right = out[k]
 
-    let fixed = false
-    for (let delta = 1; delta <= 3 && !fixed; delta++) {
-      for (const dir of [-1, 1]) {
-        const moved = dir < 0 ? delta : -delta
-        const newLeftLen = left.beatIds.length + moved
-        const newRightLen = right.beatIds.length - moved
-        if (newLeftLen < 1 || newRightLen < 1) continue
+      const seam = analyzeSeam(getBeats(left), getBeats(right), ctx)
+      if (!seam.blackFallback) continue
 
-        const candidateLeft: Group = {
-          id: left.id,
-          beatIds: left.beatIds.slice(0, newLeftLen)
+      for (let delta = 1; delta <= 3; delta++) {
+        let fixed = false
+        for (const dir of [-1, 1]) {
+          const moved = dir < 0 ? delta : -delta
+          const newLeftLen = left.beatIds.length + moved
+          const newRightLen = right.beatIds.length - moved
+          if (newLeftLen < 1 || newRightLen < 1) continue
+
+          const candidateLeft: Group = {
+            id: left.id,
+            beatIds: left.beatIds.slice(0, newLeftLen)
+          }
+          const candidateRight: Group = {
+            id: right.id,
+            beatIds: [...left.beatIds.slice(newLeftLen), ...right.beatIds]
+          }
+          if (framesOf(candidateLeft) > cap) continue
+          if (framesOf(candidateRight) > cap) continue
+
+          const s = analyzeSeam(getBeats(candidateLeft), getBeats(candidateRight), ctx)
+          if (!s.blackFallback && s.issues.every((i) => i.level !== 'error')) {
+            left.beatIds = candidateLeft.beatIds
+            right.beatIds = candidateRight.beatIds
+            fixed = true
+            changed = true
+            break
+          }
         }
-        const candidateRight: Group = {
-          id: right.id,
-          beatIds: [...left.beatIds.slice(newLeftLen), ...right.beatIds]
-        }
-        if (framesOf(candidateLeft) > cap) continue
-        if (framesOf(candidateRight) > cap) continue
-
-        const s = analyzeSeam(getBeats(candidateLeft), getBeats(candidateRight), ctx)
-        if (!s.blackFallback && s.issues.every((i) => i.level !== 'error')) {
-          left.beatIds = candidateLeft.beatIds
-          right.beatIds = candidateRight.beatIds
-          seam = s
-          fixed = true
-          break
-        }
+        if (fixed) break
       }
     }
+
+    if (!changed) break
   }
   return out
 }

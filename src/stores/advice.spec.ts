@@ -1,7 +1,7 @@
-import 'fake-indexeddb/auto'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
-import { db } from '@/db'
+import { setDbImpl, setKvImpl } from '@/db'
+import { createMemoryDb, createMemoryKv } from '@/db/memory'
 import { DEFAULT_SETTINGS } from '@/domain/types'
 import type { ID } from '@/domain/types'
 import type { StageAdvice } from '@/core/llm/advice'
@@ -21,8 +21,8 @@ const DRAFTS = [
 ]
 
 async function freshDb() {
-  await db.delete?.()
-  await db.open?.()
+  setDbImpl(createMemoryDb())
+  setKvImpl(createMemoryKv())
 }
 
 /** 建项目 + 片段 + 实体 + 一个方案，返回常用句柄 */

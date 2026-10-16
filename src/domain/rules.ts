@@ -553,6 +553,25 @@ export function validateGlobal(input: GlobalValidateInput, ctx: ValidateContext)
     }
   }
 
+  // 英文终稿：出场的实体必须有英文名，否则引擎回退中文名字，
+  // 派生字段（subject_definitions 等）会变中英混排 —— 这是模型字段检查覆盖不到的盲区
+  if (!isZh(contextLang(ctx))) {
+    const usedEntityIds = new Set<ID>()
+    for (const seg of input.segments) {
+      for (const b of seg.beats) for (const id of allEntityIdsOf(b)) usedEntityIds.add(id)
+    }
+    for (const e of input.entities) {
+      if (!usedEntityIds.has(e.id)) continue
+      if (!e.nameEn?.trim()) {
+        issues.push({
+          ruleId: 'lang:glossary-missing',
+          level: 'error',
+          message: `实体「${e.name}」缺少英文名（nameEn），英文终稿会回退中文名字，导致提示词中英混排`
+        })
+      }
+    }
+  }
+
   // 跨段音色逐字一致
   const voiceByEntity = new Map<ID, Set<string>>()
   for (const seg of input.segments) {
@@ -635,7 +654,8 @@ const REGISTRY_SCOPE_RULES = new Set<string>([
   'registry:no-number',
   'registry:stale-number',
   'registry:sx-mismatch',
-  'registry:voice-missing'
+  'registry:voice-missing',
+  'lang:glossary-missing'
 ])
 
 export function issueScope(issue: RuleIssue): FixScope {

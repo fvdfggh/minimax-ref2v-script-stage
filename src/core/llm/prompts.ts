@@ -1,5 +1,5 @@
 import specText from '../../../说明.txt?raw'
-import type { Beat, Entity, FieldSchema, Lang, SeamAnalysis } from '@/domain/types'
+import type { Asset, Beat, Entity, FieldSchema, Lang, SeamAnalysis } from '@/domain/types'
 import { subjectTag, sxTag } from '@/domain/registry'
 import { BEAT_KIND_LABEL, resolveSubjectId } from '@/domain/beats'
 import type { ChatMessage } from './types'
@@ -21,6 +21,29 @@ ${specText}
 </spec>
 
 输出必须是合法 JSON，不要输出任何解释文字或 Markdown 代码块标记。`
+
+/**
+ * 素材说明只读上下文：把每张参考图 / 参考音频的 desc 交给模型，
+ * 帮它理解 <Picture N> 里到底是什么，从而写出更准确的字段。
+ *
+ * ★ 关键：这只是一段「只读上下文」，不是任何输出字段的内容。
+ *   最终提示词里 <Picture N> 是权威的结构标记，视频模型也会直接看到参考本体，
+ *   所以 desc 绝不能被原样 / 改写进输出。这里明确告知模型这一点。
+ * 没有 desc 的素材不出现；全是空则返回空串（调用方不额外输出）。
+ */
+function referenceNotes(assets?: Asset[]): string {
+  if (!assets?.length) return ''
+  const rows = assets
+    .filter((a) => a.pictureN > 0 && a.kind !== 'scene' && (a.desc ?? '').trim())
+    .sort((a, b) => a.pictureN - b.pictureN)
+    .map((a) => `- <Picture ${a.pictureN}>: ${a.desc!.trim()}`)
+  if (!rows.length) return ''
+  return (
+    '【参考素材说明（只读上下文：帮你理解每张参考图 / 参考音频里是什么，供撰写时参考）】\n' +
+    rows.join('\n') +
+    '\n⚠ 以上仅供你理解参考内容，不要原样或改写写进任何输出字段；最终提示词里只保留 <Picture N> 结构标记。'
+  )
+}
 
 /* --------------------------- 阶段一 --------------------------- */
 
@@ -242,6 +265,8 @@ export interface Stage2Options {
   batch?: { index: number; total: number }
   /** 上一批已填好的细节：只用来对齐运镜 / 画面的措辞风格 */
   contextDetails?: Stage2BeatDetail[]
+  /** 素材清单：把有 desc 的参考图 / 参考音频作为只读上下文交给模型 */
+  assets?: Asset[]
 }
 
 export function buildStage2Messages(
@@ -252,6 +277,7 @@ export function buildStage2Messages(
   const free = (options.language ?? 'zh') === 'zh' ? '中文' : '英文'
   const batch = options.batch
   const batched = !!batch && batch.total > 1
+  const refNotes = referenceNotes(options.assets)
   const entityTable = entities
     .map((e) => {
       const parts = [
@@ -317,7 +343,7 @@ export function buildStage2Messages(
 
 已知实体名单：
 ${entityTable || '（无）'}
-
+${refNotes}
 输出 JSON 结构：
 {
   "details": [
@@ -381,6 +407,8 @@ export interface SegmentFillInput {
   fps: number
   /** 本段字段应当用什么语言撰写 */
   language?: Lang
+  /** 素材清单：把有 desc 的参考图 / 参考音频作为只读上下文交给模型 */
+  assets?: Asset[]
 }
 
 /** 与 SegmentFillInput 共用的语言解析 */
@@ -415,6 +443,7 @@ export function buildSegmentFillMessages(input: SegmentFillInput): ChatMessage[]
   const { schema, groupBeats, entities, existing, segmentIndex, segmentTotal, frames, fps } = input
   const lang = fillLang(input)
   const rules = FIELD_RULES[lang] ?? FIELD_RULES.zh
+  const refNotes = referenceNotes(input.assets)
 
   const entityById = new Map(entities.map((e) => [e.id, e]))
   const nameOf = (id?: string | null) => (id ? entityById.get(id)?.name ?? '' : '')
@@ -512,7 +541,7 @@ ${frames} 帧 = ${duration} 秒
 
 【出场实体与参考图】
 ${entityBrief || '-（无）'}
-
+${refNotes}
 【本段镜头序列】
 ${structure}
 ${derivedContext ? `\n【已生成字段（只读，不要重复输出）】\n${derivedContext}` : ''}
@@ -552,6 +581,8 @@ export interface FixInput {
   fps: number
   /** 用户附加的额外要求 */
   instruction?: string
+  /** 素材清单：把有 desc 的参考图 / 参考音频作为只读上下文交给模型 */
+  assets?: Asset[]
 }
 
 /**
@@ -560,6 +591,7 @@ export interface FixInput {
  */
 export function buildFixMessages(input: FixInput): ChatMessage[] {
   const { schema, fields, issues, groupBeats, entities, segmentIndex, segmentTotal, frames, fps } = input
+  const refNotes = referenceNotes(input.assets)
 
   const entityById = new Map(entities.map((e) => [e.id, e]))
   const nameOf = (id?: string | null) => (id ? entityById.get(id)?.name ?? '' : '')
@@ -633,7 +665,7 @@ ${issueList || '（无）'}
 
 【出场实体与参考图】
 ${entityBrief || '-（无）'}
-
+${refNotes}
 【本段镜头序列（只读，不要改动镜头）】
 ${structure}
 
