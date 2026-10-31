@@ -1,4 +1,5 @@
 import type { Provider } from '@/domain/types'
+import { DEFAULT_SIZE } from '@/domain/imageSize'
 import {
   LlmError,
   applyProxy,
@@ -21,7 +22,7 @@ export interface ImageGenOptions {
   prompt: string
   /** 覆盖模型名；不填则 provider.imageModel → provider.model */
   model?: string
-  /** 形如 1024x1024 / 1024x576；不填用默认 */
+  /** 形如 1280x720 / 960x960；不填用默认（92 万像素量级，见 domain/imageSize.ts） */
   size?: string
   n?: number
   signal?: AbortSignal
@@ -177,7 +178,7 @@ export async function generateImage(provider: Provider, opts: ImageGenOptions): 
     model,
     prompt: opts.prompt,
     n: opts.n ?? 1,
-    size: opts.size ?? '1024x1024'
+    size: opts.size ?? DEFAULT_SIZE
   }
 
   let data: any

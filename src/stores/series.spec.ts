@@ -198,8 +198,75 @@ describe('series store：两级结构 + 注入/提升', () => {
     expect(srsEnts[0].name).toBe('配角')
   })
 
-  it('removeSeries 级联删除项目 + 所有集 + 大主体', async () => {
+  it('重复取用同一个大主体：同步描述而不是再建一个副本', async () => {
     const { series, episode } = seedSeries()
+    await saveOne(db.projects, series)
+    await saveOne(db.projects, episode)
+    await saveOne(db.entities, ent({ id: 'g1', projectId: 'srs1', name: '主角', textDesc: '短发' }))
+
+    const seriesStore = useSeriesStore()
+    const first = await seriesStore.injectToEpisode('srs1', 'g1', 'ep1')
+    expect(first.reused).toBe(false)
+
+    // 项目层改了描述，再取一次
+    await saveOne(db.entities, ent({ id: 'g1', projectId: 'srs1', name: '主角', textDesc: '长发，右眉一道疤' }))
+    const second = await seriesStore.injectToEpisode('srs1', 'g1', 'ep1')
+
+    expect(second.reused).toBe(true)
+    expect(second.entity.id).toBe(first.entity.id)
+    expect(second.entity.textDesc).toBe('长发，右眉一道疤')
+
+    const copied = await db.entities.where('projectId').equals('ep1').toArray()
+    expect(copied).toHaveLength(1)
+  })
+
+  it('取用于项目的主体推回项目：更新项目里的原件，不再造一个影子副本', async () => {
+    const { series, episode } = seedSeries()
+    await saveOne(db.projects, series)
+    await saveOne(db.projects, episode)
+    await saveOne(db.entities, ent({ id: 'g1', projectId: 'srs1', name: '主角', textDesc: '旧描述' }))
+
+    const seriesStore = useSeriesStore()
+    const pulled = await seriesStore.injectToEpisode('srs1', 'g1', 'ep1')
+
+    // 集里改完再推送
+    await saveOne(db.entities, {
+      ...(await db.entities.get(pulled.entity.id))!,
+      textDesc: '集里调好的描述'
+    })
+    const pushed = await seriesStore.promoteToSeries('ep1', pulled.entity.id, 'srs1')
+
+    expect(pushed.reused).toBe(true)
+    expect(pushed.entity.id).toBe('g1')
+    const all = await db.entities.where('projectId').equals('srs1').toArray()
+    expect(all).toHaveLength(1)
+    expect(all[0].textDesc).toBe('集里调好的描述')
+    // 集里的副本保留，溯源不变
+    const epEnt = await db.entities.get(pulled.entity.id)
+    expect(epEnt?.sourceId).toBe('g1')
+  })
+
+  it('usageOf：既统计谁取用过，也统计项目主体是从哪一集推上来的', async () => {
+    const { series, episode } = seedSeries()
+    await saveOne(db.projects, series)
+    await saveOne(db.projects, episode)
+    // g1 被取用到 ep1（集内副本 c1）；g2 是从 ep1 的 c2 推上来的
+    await saveOne(db.entities, ent({ id: 'g1', projectId: 'srs1', name: '主角' }))
+    await saveOne(db.entities, ent({ id: 'g2', projectId: 'srs1', name: '配角', sourceId: 'c2' }))
+    await saveOne(db.entities, ent({ id: 'c1', projectId: 'ep1', name: '主角', sourceId: 'g1' }))
+    await saveOne(db.entities, ent({ id: 'c2', projectId: 'ep1', name: '配角' }))
+
+    const seriesStore = useSeriesStore()
+    await seriesStore.loadAll()
+    await seriesStore.select('srs1')
+    const res = await seriesStore.usageOf('srs1')
+
+    expect(res.usedBy.g1).toEqual(['ep1'])
+    expect(res.origin.g2).toBe('ep1')
+    expect(res.origin.g1).toBeUndefined()
+  })
+
+  it('removeSeries 级联删除项目 + 所有集 + 大主体', async () => {    const { series, episode } = seedSeries()
     await saveOne(db.projects, series)
     await saveOne(db.projects, episode)
     await saveOne(db.entities, ent({ id: 'g1', projectId: 'srs1', name: '大主体' }))
@@ -214,5 +281,93 @@ describe('series store：两级结构 + 注入/提升', () => {
     expect(await db.projects.get('srs1')).toBeUndefined()
     expect(await db.projects.get('ep1')).toBeUndefined()
     expect(seriesStore.seriesList).toHaveLength(0)
+  })
+  it('addBlankSubject：项目层先建空主体，同名不重复；填充只补空字段', async () => {
+    const { series } = seedSeries()
+    await saveOne(db.projects, series)
+
+    const store = useSeriesStore()
+    await store.loadAll()
+
+    const first = await store.addBlankSubject('srs1', {
+      name: '林医生',
+      type: 'character',
+      kind: 'speaking'
+    })
+    expect(first.created).toBe(true)
+    expect(first.entity.projectId).toBe('srs1')
+    // 空主体：只有名字 / 类型 / 是否说话，设定留空等拆解回填
+    expect(first.entity.textDesc).toBeNull()
+    expect(first.entity.costumeDesc).toBeNull()
+    expect(first.entity.voiceDesc).toBeNull()
+
+    // 模型重复登记同名主体：不产生第二份，类型也以母版为准
+    const again = await store.addBlankSubject('srs1', {
+      name: '林医生',
+      type: 'scene',
+      kind: 'non_speaking'
+    })
+    expect(again.created).toBe(false)
+    expect(again.entity.id).toBe(first.entity.id)
+    expect(again.entity.type).toBe('character')
+
+    const filled = await store.fillBlankSubject(first.entity.id, {
+      textDesc: '短发，右眉一道旧疤',
+      voiceDesc: '低沉男声'
+    })
+    expect(filled?.textDesc).toBe('短发，右眉一道旧疤')
+    expect(filled?.voiceDesc).toBe('低沉男声')
+
+    // 母版已有的设定不再被后来的集覆盖
+    const kept = await store.fillBlankSubject(first.entity.id, {
+      textDesc: '另一套长相',
+      costumeDesc: '白大褂'
+    })
+    expect(kept?.textDesc).toBe('短发，右眉一道旧疤')
+    expect(kept?.costumeDesc).toBe('白大褂')
+
+    expect(await store.subjectsOf('srs1')).toHaveLength(1)
+  })
+  it('publishToEpisode：先建项目层母版，再取用到本集；重复拆解不产生第二份', async () => {
+    const { series, episode } = seedSeries()
+    await saveOne(db.projects, series)
+    await saveOne(db.projects, episode)
+
+    const store = useSeriesStore()
+    await store.loadAll()
+
+    const res = await store.publishToEpisode('srs1', 'ep1', [
+      { name: '林医生', type: 'character', kind: 'speaking', textDesc: '短发，右眉一道旧疤', voiceDesc: '低沉男声' },
+      { name: '门诊大厅', type: 'scene', kind: 'non_speaking', textDesc: '白墙，长椅' }
+    ])
+    expect(res.createdInProject).toBe(2)
+    expect(res.injected).toBe(2)
+    expect(res.synced).toBe(0)
+
+    const masters = await store.subjectsOf('srs1')
+    expect(masters).toHaveLength(2)
+    const lin = masters.find((e) => e.name === '林医生')!
+    expect(lin.textDesc).toBe('短发，右眉一道旧疤')
+    expect(lin.voiceDesc).toBe('低沉男声')
+
+    const copies = await db.entities.where('projectId').equals('ep1').toArray()
+    expect(copies).toHaveLength(2)
+    // 本集拿到的是副本：带 sourceId 溯源，不是原生实体
+    expect(copies.every((e) => !!e.sourceId)).toBe(true)
+    expect(copies.find((e) => e.name === '林医生')?.sourceId).toBe(lin.id)
+
+    // 再拆一次同一批主体：母版不新建、副本不新建，只同步描述
+    const again = await store.publishToEpisode('srs1', 'ep1', [
+      { name: '林医生', type: 'character', kind: 'speaking', textDesc: '另一套长相' }
+    ])
+    expect(again.createdInProject).toBe(0)
+    expect(again.synced).toBe(1)
+    expect(again.injected).toBe(0)
+    expect(await store.subjectsOf('srs1')).toHaveLength(2)
+    expect((await db.entities.where('projectId').equals('ep1').toArray()).length).toBe(2)
+    // 母版已有设定不被后来的拆解覆盖
+    expect((await store.subjectsOf('srs1')).find((e) => e.name === '林医生')?.textDesc).toBe(
+      '短发，右眉一道旧疤'
+    )
   })
 })

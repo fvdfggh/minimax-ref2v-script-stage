@@ -1,15 +1,26 @@
-import { uid, now } from '@/core/id'
+import { now } from '@/core/id'
 import { beatFrames, timecode } from './timing'
 import {
   collectEntities,
   dominantScene,
+  entityIdsOf,
   firstNarrativeBeat,
   firstSpeakerId,
   hasSceneChange,
   lastNarrativeBeat,
   resolveSubjectId
 } from './beats'
-import type { Beat, ID, ProjectSettings, SeamAnalysis, SeamIssue, Entity } from './types'
+import type {
+  Beat,
+  GuideStrength,
+  ID,
+  ProjectSettings,
+  SeamAnalysis,
+  SeamIssue,
+  SeamKind,
+  SeamOverride,
+  Entity
+} from './types'
 import { AUTO_KINDS, DEFAULT_SETTINGS } from './types'
 import { beatShotText, blackText, langOf, preshootText, tailCutText } from './lang'
 
@@ -31,6 +42,129 @@ import { beatShotText, blackText, langOf, preshootText, tailCutText } from './la
 export interface SeamContext {
   settings: ProjectSettings
   entityById?: Map<ID, Entity>
+  /**
+   * 冻结的段尾处理（出片时那份判定）。
+   *
+   * 段一旦出片，尾帧去向就已经烤进画面里了。之后邻居变了（插了新段、删了下一段），
+   * 实时重算会把尾巴改掉 —— 等于让已出的片作废。传了 freeze 就照快照复现，
+   * 保证本段的镜头序列逐字节不变。
+   */
+  freeze?: { tail: 'none' | 'black' | 'cut'; tailCutTargetId?: ID | null; preshoot?: boolean }
+  /** 人工指定本处怎么接（Group.seamToNext），auto / 缺省 = 按结构化字段自动判 */
+  override?: SeamOverride
+}
+
+export const SEAM_KIND_LABEL: Record<SeamKind, string> = {
+  transition: '转场',
+  cut: '镜切',
+  take: '顺接'
+}
+
+/** 引用强度由接缝类型直接映射，别在别处再写一份 */
+export const STRENGTH_OF_KIND: Record<SeamKind, GuideStrength> = {
+  transition: 0,
+  cut: 1,
+  take: 2
+}
+
+export interface SeamClass {
+  kind: SeamKind
+  strength: GuideStrength
+  /** 判定理由，中文一句话，直接上界面 */
+  reason: string
+}
+
+/**
+ * 接缝分类：只用**可直接比较的结构化字段**，不猜文本。
+ *
+ * 判据来源就四个：场景实体（sceneId）、镜头主体（resolveSubjectId）、
+ * 出场主体集（entities）、镜头类型（kind）。四条按"越确定越优先"排列：
+ *
+ *   0. 人工指定            —— 定死，覆盖一切
+ *   1. 首拍标了 transitionIn —— 阶段一读完整原文时给的，现场判不出来
+ *   2. 场景实体变了         —— 换地方，铁证
+ *   3. 首拍是 scene_switch  —— 拆解阶段已经标过换场
+ *   4. 首拍是 establishing  —— 重新建立环境，仍算同场镜切，但保留首帧锚点
+ *   5. 镜头主体相同         —— 顺接
+ *   6. 其余（主体有交集 / 无交集）—— 同场镜切
+ *
+ * 注意第 6 条：**主体不重叠不等于转场**。左段林晚、右段陈默，还在同一间店里，
+ * 环境与光位同源，引用上段依然有参考价值。只有场景实体变了才是真换地方。
+ * 判不出来（场景缺失、没有片段）时一律落到镜切 —— 引用是安全侧。
+ */
+export function classifySeam(
+  leftBeats: Beat[],
+  rightBeats: Beat[],
+  ctx: { override?: SeamOverride; entityById?: Map<ID, Entity> } = {}
+): SeamClass {
+  const last = lastNarrativeBeat(leftBeats)
+  const first = firstNarrativeBeat(rightBeats)
+
+  const nameOf = (id: ID | null | undefined): string => {
+    if (!id) return '未标场景'
+    return ctx.entityById?.get(id)?.name ?? id
+  }
+
+  if (!last || !first) {
+    return { kind: 'cut', strength: STRENGTH_OF_KIND.cut, reason: '接缝一侧没有可用片段，按镜切处理' }
+  }
+
+  if (ctx.override && ctx.override !== 'auto') {
+    return {
+      kind: ctx.override,
+      strength: STRENGTH_OF_KIND[ctx.override],
+      reason: `人工指定为${SEAM_KIND_LABEL[ctx.override]}`
+    }
+  }
+
+  if (first.transitionIn) {
+    return {
+      kind: 'transition',
+      strength: 0,
+      reason: `「${first.title || first.id}」标了转场进入`
+    }
+  }
+
+  const lScene = last.sceneId ?? null
+  const rScene = first.sceneId ?? null
+  if (lScene && rScene && lScene !== rScene) {
+    return { kind: 'transition', strength: 0, reason: `换场：${nameOf(lScene)} → ${nameOf(rScene)}` }
+  }
+
+  if (first.kind === 'scene_switch') {
+    return {
+      kind: 'transition',
+      strength: 0,
+      reason: `「${first.title || first.id}」是换场镜头`
+    }
+  }
+
+  if (first.kind === 'establishing') {
+    return {
+      kind: 'cut',
+      strength: STRENGTH_OF_KIND.cut,
+      reason: `「${first.title || first.id}」重新建立环境，保留首帧锚点`
+    }
+  }
+
+  const lSubject = resolveSubjectId(last)
+  const rSubject = resolveSubjectId(first)
+  if (lSubject && rSubject && lSubject === rSubject) {
+    return {
+      kind: 'take',
+      strength: STRENGTH_OF_KIND.take,
+      reason: `同一主体 ${nameOf(lSubject)} 连着演`
+    }
+  }
+
+  const lSet = new Set(entityIdsOf(last))
+  const shared = entityIdsOf(first).find((id) => lSet.has(id))
+  const pair = `${nameOf(lSubject)} → ${nameOf(rSubject)}`
+  return {
+    kind: 'cut',
+    strength: STRENGTH_OF_KIND.cut,
+    reason: shared ? `同场镜切：${pair}（${nameOf(shared)} 两边都在）` : `同场镜切：${pair}`
+  }
 }
 
 export function analyzeSeam(
@@ -39,6 +173,8 @@ export function analyzeSeam(
   ctx: SeamContext = { settings: DEFAULT_SETTINGS }
 ): SeamAnalysis {
   const settings = ctx.settings
+  const legacy = (settings.seamPolicy ?? 'guide') === 'legacy'
+
   const leftEntities = collectEntities(leftBeats)
   const rightEntities = collectEntities(rightBeats)
 
@@ -49,16 +185,30 @@ export function analyzeSeam(
   const firstSubjectId = firstBeat ? resolveSubjectId(firstBeat) : null
   const speakerId = firstSpeakerId(rightBeats)
 
-  // 场景综合判断：换场优先于角色
-  const leftSceneId = dominantScene(leftBeats)
-  const rightSceneId = dominantScene(rightBeats)
+  /*
+   * 接缝两侧的场景：优先取**边界那一拍**的 sceneId。
+   *
+   * 以前用整段的 dominantScene（众数），段内跨场景时众数会把接缝处的真实
+   * 场景盖掉 —— 左段最后三拍已经进了天台，众数还是便利店，于是判成同场。
+   * 真正贴在一起的是这两拍，就该看这两拍。取不到再退回众数。
+   */
+  const leftSceneId = lastBeat?.sceneId ?? dominantScene(leftBeats)
+  const rightSceneId = firstBeat?.sceneId ?? dominantScene(rightBeats)
   const sceneChanged = !!leftSceneId && !!rightSceneId && leftSceneId !== rightSceneId
+
+  const cls = classifySeam(leftBeats, rightBeats, {
+    override: ctx.override,
+    entityById: ctx.entityById
+  })
 
   const issues: SeamIssue[] = []
 
   const result: SeamAnalysis = {
     leftGroupId: '',
     rightGroupId: '',
+    kind: cls.kind,
+    strength: cls.strength,
+    reason: cls.reason,
     lastSubjectId,
     firstSubjectId,
     firstSpeakerId: speakerId,
@@ -85,37 +235,36 @@ export function analyzeSeam(
     return result
   }
 
-  // 预备镜头：右段第一个说话镜头之前，必须有一段 0.3s 说话人独占镜头
-  result.needsPreshoot = speakerId != null
+  /* ---------------- guide：段间引导，段内不放补丁 ---------------- */
 
-  /* ---------------- 情况 0：换场 ---------------- */
-
-  if (sceneChanged && settings.scenePriorityOnSeam && rightSceneId) {
-    // 换场时"下一段需要的主体"首先是新场景 —— 观众得先看到环境。
-    // 引擎会在左段末尾自动插一个 0.3s 的换场镜头展示新场景，
-    // 它同时满足"段尾切镜"和"切到的主体在本段已定义并出现"（场景会被写进本段 subject_definitions）。
-    result.scenePriorityApplied = true
-    result.needsTailCut = true
-    result.tailCutTargetId = rightSceneId
-    // 换场不做重叠帧，画面差异太大
-    result.continuityToNext = false
-    result.continuityFromPrev = false
+  if (!legacy) {
+    // 引用与否只看强度：transition 0 不引导，cut 1 / take 2 都引导
+    result.continuityToNext = cls.strength > 0
+    result.continuityFromPrev = cls.strength > 0
 
     issues.push({
-      code: 'seam:scene-transition',
+      code: `seam:${cls.kind}`,
       level: 'info',
-      message: `检测到换场（${subjectLabel(leftSceneId, ctx)} → ${subjectLabel(rightSceneId, ctx)}），左段末尾插入 0.3s 换场镜头切至 ${subjectLabel(rightSceneId, ctx)}，连续性参数置 false`
+      message: cls.reason
     })
 
-    // 换场后第一拍就是台词，新环境还没建立
-    if (firstBeat && firstBeat.kind === 'dialogue') {
+    if (cls.kind === 'transition') {
       issues.push({
-        code: 'seam:scene-change-no-establish',
-        level: 'warn',
-        message: '换场后首个叙事镜头就是台词，新环境尚未建立；建议在右段开头加一个场景铺垫片段'
+        code: 'seam:transition-needs-head',
+        level: 'info',
+        message: '转场进入：不引导下段，一致性由本段首帧关键帧 + 主体参考图负责'
       })
     }
-    // 右段自己内部也跨了场景
+
+    if (!lastBeat?.sceneId || !firstBeat?.sceneId) {
+      issues.push({
+        code: 'seam:missing-scene',
+        level: 'warn',
+        message: '接缝处有一侧没标场景，转场只能按主体 / 镜头判；同场景内的时间跳跃请在该拍标「转场进入」'
+      })
+    }
+
+    // 段内跨场景：本段自己要拆，接缝判得再准也救不了
     if (hasSceneChange(rightBeats)) {
       issues.push({
         code: 'seam:right-multi-scene',
@@ -126,7 +275,39 @@ export function analyzeSeam(
     return result
   }
 
-  /* ---------------- 情况 1~3：同场，按主体判定 ---------------- */
+  /* ---------------- legacy：旧行为，一字不改 ---------------- */
+
+  result.needsPreshoot = speakerId != null
+
+  if (sceneChanged && settings.scenePriorityOnSeam && rightSceneId) {
+    result.scenePriorityApplied = true
+    result.needsTailCut = true
+    result.tailCutTargetId = rightSceneId
+    result.continuityToNext = false
+    result.continuityFromPrev = false
+
+    issues.push({
+      code: 'seam:scene-transition',
+      level: 'info',
+      message: `检测到换场（${subjectLabel(leftSceneId, ctx)} → ${subjectLabel(rightSceneId, ctx)}），左段末尾插入 0.3s 换场镜头切至 ${subjectLabel(rightSceneId, ctx)}，连续性参数置 false`
+    })
+
+    if (firstBeat && firstBeat.kind === 'dialogue') {
+      issues.push({
+        code: 'seam:scene-change-no-establish',
+        level: 'warn',
+        message: '换场后首个叙事镜头就是台词，新环境尚未建立；建议在右段开头加一个场景铺垫片段'
+      })
+    }
+    if (hasSceneChange(rightBeats)) {
+      issues.push({
+        code: 'seam:right-multi-scene',
+        level: 'warn',
+        message: '右段内部包含多个场景，建议按场景拆段'
+      })
+    }
+    return result
+  }
 
   const targetId = speakerId ?? firstSubjectId
 
@@ -148,7 +329,6 @@ export function analyzeSeam(
   }
 
   if (lastSubjectId === targetId) {
-    // 情况 1：左段末帧已经是目标主体，直接顺接
     result.needsTailCut = false
     result.continuityToNext = true
     result.continuityFromPrev = true
@@ -158,7 +338,6 @@ export function analyzeSeam(
       message: `左段末帧主体即 ${subjectLabel(targetId, ctx)}，无需切镜`
     })
   } else if (leftEntities.includes(targetId)) {
-    // 情况 2：目标主体在左段已出现 -> 尾帧最后 0.3s 切镜
     result.needsTailCut = true
     result.tailCutTargetId = targetId
     result.continuityToNext = true
@@ -177,7 +356,6 @@ export function analyzeSeam(
       })
     }
   } else {
-    // 情况 3：左段没有该主体 -> 黑屏兜底
     result.blackFallback = true
     result.needsTailCut = false
     result.continuityToNext = false
@@ -211,11 +389,17 @@ export function seamCost(analysis: SeamAnalysis, settings: ProjectSettings): {
   black: boolean
   cut: boolean
   preshoot: boolean
+  /** guide 策略下的真实口径：转场才是硬代价 */
+  transition: boolean
+  kind: SeamKind
 } {
   return {
     black: analysis.blackFallback,
     cut: analysis.needsTailCut,
-    preshoot: analysis.needsPreshoot
+    preshoot: analysis.needsPreshoot,
+    /** guide 策略下的真实口径：转场才是硬代价 */
+    transition: analysis.kind === 'transition',
+    kind: analysis.kind
   }
 }
 
@@ -238,17 +422,37 @@ export function materializeSegment(
   ctx: SeamContext = { settings: DEFAULT_SETTINGS }
 ): MaterializeResult {
   const settings = ctx.settings
+  const policy = settings.seamPolicy ?? 'guide'
   const generated: Beat[] = []
   const out: Beat[] = []
 
+  /*
+   * 出过片的段按冻结快照复现，否则切策略（legacy ↔ guide）会把老片的
+   * 段内容改掉 —— 那等于让已经渲染好的片子失效。
+   * 所以只要 ctx.freeze 在，仍然按旧方式补齐段首 / 段尾的自动片段。
+   */
+  const keepAuto = policy === 'legacy' || !!ctx.freeze
+
   const speakerId = firstSpeakerId(narrativeBeats)
+  const lastBeat = narrativeBeats[narrativeBeats.length - 1]
+
+  /*
+   * 段首预备镜头插不插，只看「出片那一刻它有没有」：
+   *   · 有冻结快照 → 按快照记的来（老数据没记，当时只有 legacy，所以按 true 推）
+   *   · 没快照     → 新内容，按当前策略
+   */
+  const wantPreshoot = ctx.freeze
+    ? (ctx.freeze.preshoot ?? policy === 'legacy')
+    : policy === 'legacy'
 
   // 1) 预备镜头：每段第一个说话镜头之前
-  //    只取决于"本段自己"有没有台词，与缝合结论无关
-  if (settings.autoPreshoot && speakerId) {
+  if (wantPreshoot && settings.autoPreshoot && speakerId) {
     const first = firstNarrativeBeat(narrativeBeats)
     const preshoot: Beat = {
-      id: uid('beat'),
+      // ★ id 必须可复现：这些自动片段每次渲染都会重建，用随机 uid 会让
+      //   segmentSourceHash 每次都变 —— 结果是模型字段永远被判成「已过期」，
+      //   「新增/删除片段」的对比也永远把自动片段算成新增。
+      id: `beat_preshoot_${first?.id ?? 'segment'}`,
       projectId: first?.projectId ?? '',
       order: -1,
       kind: 'preshoot',
@@ -269,46 +473,60 @@ export function materializeSegment(
 
   out.push(...narrativeBeats)
 
-  // 2) 段尾处理
-  if (seam?.blackFallback) {
-    const last = narrativeBeats[narrativeBeats.length - 1]
-    const black: Beat = {
-      id: uid('beat'),
-      projectId: last?.projectId ?? '',
-      order: 9999,
-      kind: 'black',
-      title: '尾帧黑屏',
-      entities: [],
-      estFrames: settings.blackTailFrames,
-      manualFrames: true,
-      enriched: true,
-      locked: false,
-      sceneId: last?.sceneId,
-      createdAt: now(),
-      updatedAt: now()
+  /*
+   * 2) 段尾处理。
+   *
+   * guide 策略下什么都不插：不引导下段时，右段本来就能自己决定开头，
+   * 不需要"切过去"也不需要"黑屏兜底"—— 那条 0.3s 的黑屏本身就是旧思路的补丁。
+   */
+  if (keepAuto) {
+    const blackTail = ctx.freeze ? ctx.freeze.tail === 'black' : !!seam?.blackFallback
+    const tailCut = ctx.freeze
+      ? ctx.freeze.tail === 'cut'
+        ? (ctx.freeze.tailCutTargetId ?? null)
+        : null
+      : seam?.needsTailCut
+        ? (seam?.tailCutTargetId ?? null)
+        : null
+
+    if (blackTail) {
+      const black: Beat = {
+        id: `beat_black_${lastBeat?.id ?? 'segment'}`,
+        projectId: lastBeat?.projectId ?? '',
+        order: 9999,
+        kind: 'black',
+        title: '尾帧黑屏',
+        entities: [],
+        estFrames: settings.blackTailFrames,
+        manualFrames: true,
+        enriched: true,
+        locked: false,
+        sceneId: lastBeat?.sceneId,
+        createdAt: now(),
+        updatedAt: now()
+      }
+      generated.push(black)
+      out.push(black)
+    } else if (tailCut && settings.autoTailCut) {
+      const cut: Beat = {
+        id: `beat_tailcut_${lastBeat?.id ?? 'segment'}`,
+        projectId: lastBeat?.projectId ?? '',
+        order: 9999,
+        kind: 'tail_cut',
+        title: '尾帧切镜',
+        entities: [tailCut],
+        focusEntityId: tailCut,
+        estFrames: settings.seamFrames,
+        manualFrames: true,
+        enriched: true,
+        locked: false,
+        sceneId: lastBeat?.sceneId,
+        createdAt: now(),
+        updatedAt: now()
+      }
+      generated.push(cut)
+      out.push(cut)
     }
-    generated.push(black)
-    out.push(black)
-  } else if (seam?.needsTailCut && seam.tailCutTargetId && settings.autoTailCut) {
-    const last = narrativeBeats[narrativeBeats.length - 1]
-    const cut: Beat = {
-      id: uid('beat'),
-      projectId: last?.projectId ?? '',
-      order: 9999,
-      kind: 'tail_cut',
-      title: '尾帧切镜',
-      entities: [seam.tailCutTargetId],
-      focusEntityId: seam.tailCutTargetId,
-      estFrames: settings.seamFrames,
-      manualFrames: true,
-      enriched: true,
-      locked: false,
-      sceneId: last?.sceneId,
-      createdAt: now(),
-      updatedAt: now()
-    }
-    generated.push(cut)
-    out.push(cut)
   }
 
   const frames = out.reduce((sum, b) => sum + beatFrames(b, settings), 0)

@@ -6,7 +6,8 @@ import {
   createBackendDb,
   setBackendBase,
   setBackendProject,
-  type DataTable
+  type DataTable,
+  type ImportResult
 } from '@/core/backend'
 import { toPlain, toPlainList } from '@/core/plain'
 import type { Assembly, Asset, Beat, Entity, ID, Project, Provider } from '@/domain/types'
@@ -165,14 +166,21 @@ export async function exportWorkspace(): Promise<{ blob: Blob; filename: string 
   return { blob, filename: '剧本台-全部数据.zip' }
 }
 
-export async function exportProjectFile(projectId: ID, name: string): Promise<{ blob: Blob; filename: string }> {
+/**
+ * 导出单个项目（项目 = 系列：连各集、素材、用到的音色包一起打），
+ * 是为了"换一台设备直接接着做"——不只是项目 JSON。
+ */
+export async function exportProjectFile(
+  projectId: ID,
+  name: string
+): Promise<{ blob: Blob; filename: string }> {
   const blob = await backendExportProjectZip(projectId)
   const safe = (name || 'project').replace(/[\\/:*?"<>|]+/g, '_')
   return { blob, filename: `${safe}.剧本台项目.zip` }
 }
 
-/** 导入整库 / 单项目备份（zip，后端识别三种历史格式） */
-export async function importWorkspace(blob: Blob): Promise<{ projects: number }> {
+/** 导入整库 / 项目包（zip，后端识别项目包 / 整库 / 单项目 / 旧版备份四种） */
+export async function importWorkspace(blob: Blob): Promise<ImportResult> {
   const res = await backendImportZip(blob)
-  return { projects: res.projects ?? (res.projectId ? 1 : 0) }
+  return { ...res, projects: res.projects ?? (res.projectId ? 1 : 0) }
 }

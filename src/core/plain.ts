@@ -56,3 +56,28 @@ export function toPlain<T>(value: T): T {
 export function toPlainList<T>(rows: T[]): T[] {
   return rows.map((row) => toPlain(row))
 }
+
+/**
+ * 深拷贝一份可以随便改的普通对象 —— **先剥代理，再克隆**。
+ *
+ * 为什么不直接 `structuredClone(x)`：从 Pinia / `ref` 里取出来的东西
+ * （`store.list[0]`、`computed(() => store.xxx)`、reactive 对象的字段）**一定
+ * 是 Proxy**，结构化克隆只认真正的普通对象，遇到 Proxy 直接抛
+ *   DataCloneError: Failed to execute 'structuredClone' on 'Window':
+ *   #<Object> could not be cloned.
+ * 这个报错完全看不出源头，Vue 又会把它包成
+ * "Unhandled error during execution of component event handler"，
+ * 于是"点一下复制配置"就变成页面报错、什么都没发生。
+ *
+ * `toPlain` 已经逐层 toRaw 重建过容器，structuredClone 只是再保险一层
+ * （Date / Blob / Map 这些宿主对象交给它拷得更干净）。带函数或类实例的值
+ * 它不认，那就退回 toPlain 那份 —— 宁可少拷一层，也不能让整条路径炸掉。
+ */
+export function deepClone<T>(value: T): T {
+  const plain = toPlain(value)
+  try {
+    return structuredClone(plain) as T
+  } catch {
+    return plain
+  }
+}

@@ -205,21 +205,34 @@ describe('buildDirectorPack', () => {
     expect(res.warnings.some((w) => w.includes('136'))).toBe(true)
   })
 
-  it('只要有连续性就打开总开关；单段强制关闭', () => {
-    const two = buildDirectorPack({
+  it('连续性默认不焊（对齐下段默认关）；只有显式 weldSeams 才打开总开关', () => {
+    const segments = [seg(), seg({ id: 'g2', continuityFromPrev: true, continuityToNext: true })]
+
+    // 首跑/普通出片：导演节点的「对齐下段」默认关，包里也不写 —— 否则会因
+    // "下一段没有首帧缓存"在 Phase 1 之前直接中止。
+    const plain = buildDirectorPack({ settings: DEFAULT_SETTINGS, segments, assets: [] })
+    expect((plain.timeline.output as any).continuityEnabled).toBe(false)
+    const plainSegs = plain.timeline.segments as Array<Record<string, any>>
+    expect(plainSegs[0].continuityFromPrev).toBe(false)
+    expect(plainSegs[1].continuityFromPrev).toBe(false)
+
+    // 重抽某段、要接到已出片的下一段时才显式焊接。
+    const welded = buildDirectorPack({
       settings: DEFAULT_SETTINGS,
-      segments: [seg(), seg({ id: 'g2', continuityFromPrev: true, continuityToNext: true })],
-      assets: []
+      segments,
+      assets: [],
+      weldSeams: true
     })
-    expect((two.timeline.output as any).continuityEnabled).toBe(true)
-    const segments = two.timeline.segments as Array<Record<string, any>>
-    expect(segments[0].continuityFromPrev).toBe(false)
-    expect(segments[1].continuityFromPrev).toBe(true)
+    expect((welded.timeline.output as any).continuityEnabled).toBe(true)
+    const weldedSegs = welded.timeline.segments as Array<Record<string, any>>
+    expect(weldedSegs[0].continuityFromPrev).toBe(false)
+    expect(weldedSegs[1].continuityFromPrev).toBe(true)
 
     const one = buildDirectorPack({
       settings: DEFAULT_SETTINGS,
       segments: [seg({ continuityToNext: true })],
-      assets: []
+      assets: [],
+      weldSeams: true
     })
     expect((one.timeline.output as any).continuityEnabled).toBe(false)
   })
@@ -273,5 +286,487 @@ describe('buildDirectorPack', () => {
     expect(paths.some((p) => p.startsWith('shared_params/scene_'))).toBe(false)
     // 不应因场景图触发任何缺素材 / 超 9 告警
     expect(res.warnings).toHaveLength(0)
+  })
+})
+
+describe('段级参考素材（关键帧 / 音视频）', () => {
+  const blob = (s: string) => new Blob([new Uint8Array([1, 2, 3])], { type: s })
+
+  it('首帧 → genImage / startImage，尾帧 → endImage，锚点 → kfImages（带帧位）', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'start' },
+            { originalName: 'b.jpg', blob: blob('image/jpeg'), role: 'anchor', frameIdx: 40 },
+            { originalName: 'c.png', blob: blob('image/png'), role: 'end' }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const segments = res.timeline.segments as Array<Record<string, any>>
+    expect(segments[0].genImage.imageFile).toBe('asset_groups/seg01/start.png')
+    expect(segments[0].startImage.imageFile).toBe('asset_groups/seg01/start.png')
+    expect(segments[0].endImage.imageFile).toBe('asset_groups/seg01/end.png')
+    // r2v 只认 kfImages：首帧 / 尾帧也必须以锚点身份出现
+    expect(segments[0].kfImages.map((k: any) => [k.index, k.frameIdx, k.imageFile])).toEqual([
+      [0, 0, 'asset_groups/seg01/start.png'],
+      // jpeg 统一成 jpg（导入端按扩展名判断能不能解码）
+      [1, 40, 'asset_groups/seg01/kf1.jpg'],
+      [2, 140, 'asset_groups/seg01/end.png']
+    ])
+
+    const paths = res.entries.map((e) => e.path)
+    expect(paths).toContain('asset_groups/seg01/start.png')
+    expect(paths).toContain('asset_groups/seg01/end.png')
+    expect(paths).toContain('asset_groups/seg01/kf1.jpg')
+    // group.json 里也要有同样一套，原版插件只认它
+    const group = res.entries.find((e) => e.path === 'asset_groups/01/group.json')
+    expect(group).toBeTruthy()
+    // 默认提示词里写着 <Picture 1> 而没有素材，这条老告警不算关键帧的锅
+    expect(res.warnings.join('\n')).not.toContain('关键帧')
+  })
+
+  it('链内段又挂了段首关键帧：提醒"上段尾帧 + 本段首帧"两个起点会打架', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      // 只有显式焊接（weldSeams）时，continuityFromPrev 才真的当"链内"
+      weldSeams: true,
+      segments: [
+        seg({ id: 'g1', frames: 141 }),
+        seg({
+          id: 'g2',
+          frames: 141,
+          refPrev: true,
+          continuityFromPrev: true,
+          keyframes: [{ originalName: 's.png', blob: blob('image/png'), role: 'start' }]
+        })
+      ],
+      assets: []
+    })
+    expect(res.warnings.join('\n')).toContain('链内')
+  })
+
+  it('锚点帧位夹到段内，越界不会丢锚点', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 124,
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'start' },
+            { originalName: 'b.png', blob: blob('image/png'), role: 'anchor', frameIdx: 9999 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // [0] 是首帧，[1] 才是被夹住的锚点
+    expect(s.kfImages.map((k: any) => k.frameIdx)).toEqual([0, 123])
+  })
+
+  it('首帧带真实帧位（段首有预备镜头）时按帧位落点，不再写死 0', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'start', frameIdx: 7 },
+            { originalName: 'b.png', blob: blob('image/png'), role: 'end', frameIdx: 120 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // 段首 / 段尾的身份照旧（genImage / endImage 还在），但 kfImages 里是真实帧位
+    expect(s.startImage.imageFile).toBe('asset_groups/seg01/start.png')
+    expect(s.endImage.imageFile).toBe('asset_groups/seg01/end.png')
+    expect(s.kfImages.map((k: any) => k.frameIdx)).toEqual([7, 120])
+  })
+
+  it('只有指定帧时不造 startImage / endImage，帧位照样进 kfImages', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 124,
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'anchor', frameIdx: 0 },
+            { originalName: 'b.png', blob: blob('image/png'), role: 'anchor', frameIdx: 60 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // 没有"段首 / 段尾"身份就不写起始 / 收尾画面（r2v 只吃 kfImages）
+    expect(s.startImage).toBeNull()
+    expect(s.endImage).toBeNull()
+    expect(s.genImage.imageFile).toBe('')
+    expect(s.kfImages.map((k: any) => [k.frameIdx, k.imageFile])).toEqual([
+      [0, 'asset_groups/seg01/kf1.png'],
+      [60, 'asset_groups/seg01/kf2.png']
+    ])
+  })
+
+  it('音视频进 refAudios / refVideos，各自从 0 编槽', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          materials: [
+            { originalName: 'voice.wav', blob: blob('audio/wav'), media: 'audio' },
+            { originalName: 'ref.mov', blob: blob('video/quicktime'), media: 'video' },
+            { originalName: 'voice2.mp3', blob: blob('audio/mpeg'), media: 'audio' }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.refAudios.map((x: any) => [x.index, x.audioFile])).toEqual([
+      [0, 'asset_groups/seg01/Audio1.wav'],
+      [1, 'asset_groups/seg01/Audio2.mp3']
+    ])
+    expect(s.refVideos.map((x: any) => [x.index, x.videoFile])).toEqual([
+      [0, 'asset_groups/seg01/Video1.mov']
+    ])
+    const paths = res.entries.map((e) => e.path)
+    expect(paths).toContain('asset_groups/seg01/Audio1.wav')
+    expect(paths).toContain('asset_groups/seg01/Video1.mov')
+  })
+
+  it('音视频带上作用起始帧（段内绝对帧位，越界夹到最后一帧）', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          materials: [
+            { originalName: 'voice.wav', blob: blob('audio/wav'), media: 'audio', frameIdx: 36 },
+            { originalName: 'ref.mp4', blob: blob('video/mp4'), media: 'video', frameIdx: 9999 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.refAudios[0].startFrameIdx).toBe(36)
+    expect(s.refVideos[0].startFrameIdx).toBe(140)
+  })
+
+  it('主体没参考图时给一条汇总警告（按名字去重，不逐段刷屏）', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          entities: [ent({ id: 'c1', name: '楚辞', pictureN: null }), ent({ id: 'c2', name: '毒尊', pictureN: 9 })],
+          prompt: 'subject_definitions://n无图'
+        }),
+        seg({
+          id: 'g2',
+          entities: [ent({ id: 'c1', name: '楚辞', pictureN: null })],
+          prompt: 'subject_definitions://n无图'
+        })
+      ],
+      assets: []
+    })
+    const text = res.warnings.join('\n')
+    expect(text).toContain('这些主体还没有参考图：楚辞、毒尊')
+    // 同一个主体只出现一次
+    expect(text.match(/楚辞/g)?.length).toBe(1)
+  })
+
+  it('主体有参考图（Picture N 有素材）时不报这条警告', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          entities: [ent({ id: 'c1', name: '楚辞', pictureN: 1 })],
+          prompt: 'subject_definitions://n<Subject 1> is 楚辞 in <Picture 1>.'
+        })
+      ],
+      assets: [asset(1)]
+    })
+    expect(res.warnings.join('\n')).not.toContain('还没有参考图')
+  })
+
+  it('没有本体时给警告，而不是假装打进包了', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          keyframes: [{ originalName: 'a.png', role: 'start' }],
+          materials: [{ originalName: 'v.mp4', media: 'video' }]
+        })
+      ],
+      assets: []
+    })
+    expect(res.warnings.join('\n')).toContain('首帧关键帧没有图片本体')
+    expect(res.warnings.join('\n')).toContain('参考视频')
+  })
+
+  it('同角色重复的关键帧降级成锚点，不静默丢失', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'start' },
+            { originalName: 'b.png', blob: blob('image/png'), role: 'start', frameIdx: 20 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.startImage.imageFile).toBe('asset_groups/seg01/start.png')
+    // 首帧 + 被降级的重复项
+    expect(s.kfImages.map((k: any) => k.frameIdx)).toEqual([0, 20])
+  })
+
+  /* ---------------- 起始帧 + 强度：两个正交参数，不再二选一 ---------------- */
+
+  it('强度低于满值的关键帧仍进 kfImages，只改 visual_noise_aug，不抢 Picture 编号', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          prompt: 'plain text',
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'anchor', frameIdx: 40, strength: 50 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // 段内素材不再挤进 refs：编号留给主体参考图
+    expect(s.refs).toEqual([])
+    expect(s.kfImages.map((k: any) => [k.fileName, k.frameIdx, k.strength, k.visualNoiseAug]))
+      .toEqual([['kf1.png', 40, 50, 0.5]])
+  })
+
+  it('满强度关键帧写 0.999（与 ComfyUI 默认一致），起始帧照旧生效', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          prompt: 'plain text',
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'anchor', frameIdx: 17, strength: 100 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.kfImages[0].frameIdx).toBe(17)
+    expect(s.kfImages[0].visualNoiseAug).toBe(0.999)
+  })
+
+  it('强度调低的图片仍占首尾身份（强度不改变它落在哪一帧）', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          frames: 141,
+          prompt: 'plain text',
+          keyframes: [
+            { originalName: 'a.png', blob: blob('image/png'), role: 'start', strength: 40 }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.startImage.imageFile).toBe('asset_groups/seg01/start.png')
+    expect(s.kfImages.map((k: any) => [k.fileName, k.frameIdx, k.visualNoiseAug])).toEqual([
+      ['start.png', 0, 0.4]
+    ])
+  })
+
+  it('视频按强度进 kfVideos；音频满强度固定音轨、低于满值走 refAudios', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          prompt: 'plain text',
+          materials: [
+            {
+              originalName: 'clip.mp4',
+              blob: blob('video/mp4'),
+              media: 'video',
+              frameIdx: 30,
+              strength: 90
+            },
+            {
+              originalName: 'line.wav',
+              blob: blob('audio/wav'),
+              media: 'audio',
+              frameIdx: 12,
+              strength: 100
+            },
+            {
+              originalName: 'tone.wav',
+              blob: blob('audio/wav'),
+              media: 'audio',
+              frameIdx: 20,
+              strength: 20
+            }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // 关键帧通道读 frameIdx（段内像素帧），不是 startFrameIdx
+    expect(s.kfVideos.map((v: any) => [v.index, v.frameIdx, v.fileName, v.visualNoiseAug])).toEqual([
+      [0, 30, 'KfVideo1.mp4', 0.899]
+    ])
+    expect(s.kfAudios.map((a: any) => [a.index, a.frameIdx, a.fileName])).toEqual([
+      [0, 12, 'KfAudio1.wav']
+    ])
+    // 低强度音频只能走参考音色，但起始帧照样写下来
+    expect(s.refAudios.map((a: any) => [a.index, a.startFrameIdx, a.fileName])).toEqual([
+      [0, 20, 'Audio1.wav']
+    ])
+  })
+
+  it('作用方式 = 参考的音视频不占时间轴：强度调满也走参考通道', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [
+        seg({
+          prompt: 'plain text',
+          materials: [
+            {
+              originalName: 'timbre.wav',
+              blob: blob('audio/wav'),
+              media: 'audio',
+              frameIdx: 0,
+              strength: 100,
+              actAs: 'reference'
+            },
+            {
+              originalName: 'motion.mp4',
+              blob: blob('video/mp4'),
+              media: 'video',
+              frameIdx: 18,
+              strength: 100,
+              actAs: 'reference'
+            }
+          ]
+        })
+      ],
+      assets: []
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    // 参考音色：进 refAudios，绝不抢这段的音轨
+    expect(s.kfAudios).toEqual([])
+    expect(s.refAudios.map((a: any) => [a.index, a.startFrameIdx, a.fileName])).toEqual([
+      [0, 0, 'Audio1.wav']
+    ])
+    // 参考动作同理：强度 100 也不进 kfVideos
+    expect(s.kfVideos).toEqual([])
+    expect(s.refVideos.map((v: any) => [v.index, v.startFrameIdx, v.fileName])).toEqual([
+      [0, 18, 'Video1.mp4']
+    ])
+  })
+})
+
+/**
+ * 段级「参考方式」素材：不落帧位，靠 Picture 编号进本段 refs。
+ *
+ * 它和提示词里的 <Picture N> 是同一个池子，所以最容易出错的不是"有没有带"，
+ * 而是"带了几遍"和"提示词没点名"——这两件事导入端都不会报错，只会静默忽略。
+ */
+describe('段级参考方式素材', () => {
+  const refImg = (pictureN: number) => ({ pictureN, fileName: `Picture${pictureN}.png`, blob: new Blob(['x']) })
+
+  it('并进本段 refs，index 按 pictureN-1，文件写进 shared_params', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: 'subject_definitions:/n<Subject 1> is A in <Picture 1>.', refImages: [refImg(3)] })],
+      assets: [asset(1), asset(3)]
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.refs.map((r: any) => r.index)).toEqual([0, 2])
+    expect(s.refs.find((r: any) => r.index === 2).imageFile).toBe('shared_params/Picture3.png')
+    expect(res.entries.map((e) => e.path)).toContain('shared_params/Picture3.png')
+    // 参考方式不落帧位：不进 kfImages
+    expect(s.kfImages).toEqual([])
+  })
+
+  it('提示词里已经点名过的编号不重复塞进 refs', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: '<Picture 3> 站在门口。', refImages: [refImg(3)] })],
+      assets: [asset(3)]
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.refs.filter((r: any) => r.index === 2)).toHaveLength(1)
+    // 点名了就不用提醒
+    expect(res.warnings.some((w) => w.includes('没有出现 <Picture 3>'))).toBe(false)
+  })
+
+  it('提示词没点名就报警告：有图没点名，模型会当它不存在', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: '一扇门被推开。', refImages: [refImg(2)] })],
+      assets: [asset(2)]
+    })
+    expect(res.warnings.some((w) => w.includes('Picture2') && w.includes('没有出现'))).toBe(true)
+  })
+
+  it('编号越过 9 个槽位时不进 refs，并明说要压缩编号', () => {
+    const over = MAX_REFERENCE_IMAGES + 1
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: '一扇门被推开。', refImages: [refImg(over)] })],
+      assets: [asset(over)]
+    })
+    const s = (res.timeline.segments as Array<Record<string, any>>)[0]
+    expect(s.refs).toEqual([])
+    expect(res.warnings.some((w) => w.includes('超过'))).toBe(true)
+  })
+})
+
+/**
+ * 包内文件名与编号的关系。
+ *
+ * 编号压缩重排后行里的 pictureN 变了，但磁盘上的文件不会改名（改了图就 404）。
+ * 所以包内名字必须**按 pictureN 现算**，并且要核对 fileName 里的编号：
+ * 只看"像不像 PictureN"会把 3 号图按 3 号写进包，而它已经是 4 号了。
+ */
+describe('包内文件名按 pictureN 现算', () => {
+  it('fileName 的编号和 pictureN 一致时沿用原名', () => {
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: '<Picture 2> 站在门口。' })],
+      assets: [asset(2)]
+    })
+    expect(res.entries.map((e) => e.path)).toContain('shared_params/Picture2.png')
+  })
+
+  it('对不上时按 pictureN 重命名，不会把旧编号写进包', () => {
+    const stale = { ...asset(4), fileName: 'Picture3.png' }
+    const res = buildDirectorPack({
+      settings: DEFAULT_SETTINGS,
+      segments: [seg({ prompt: '<Picture 4> 站在门口。' })],
+      assets: [stale]
+    })
+    const paths = res.entries.map((e) => e.path)
+    expect(paths).toContain('shared_params/Picture4.png')
+    expect(paths).not.toContain('shared_params/Picture3.png')
   })
 })

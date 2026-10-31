@@ -20,14 +20,14 @@ export const ADVICE_STAGE_LABEL: Record<AdviceStage, string> = {
   split: '① 拆解',
   enrich: '② 细节填充',
   assemble: '③ 组合与缝合',
-  complete: '④ 字段补全',
-  localize: '⑤ 中英本地化',
-  deliver: '⑥ 交付'
+  complete: '③ 字段补全',
+  localize: '④ 中英本地化',
+  deliver: '⑤ 交付'
 }
 
 /** 本阶段的"主场"职责：模型越级改别的对象时，要有意识这是越级 */
 const STAGE_DUTY: Record<AdviceStage, string> = {
-  split: '片段的新增 / 删除 / 拆分、标题、类型（kind）、台词原文、场景与主体绑定、实体登记。',
+  split: '片段的新增 / 删除 / 拆分、标题、类型（kind）、台词原文、场景与主体绑定。实体登记不在这里，在「主体登记」页。',
   enrich: '每个镜头的运镜 direction、画面 visualDesc、聚焦主体 focus、说话人、主体与场景绑定。',
   assemble: '分段的边界（在哪一刀切开、哪几段合并）、某段是否引用上一段。',
   complete: '各段模型字段的内容：summary / overall_soundscape / non_diegetic_music。',
@@ -75,9 +75,12 @@ export interface AdviceEntityPatch {
   kind?: 'speaking' | 'non_speaking'
   voiceDesc?: string | null
   textDesc?: string | null
+  /** 穿什么 / 体型。与 textDesc 分开：头部图只读长相，三视图才读这一段 */
+  costumeDesc?: string | null
   nameEn?: string | null
   voiceDescEn?: string | null
   textDescEn?: string | null
+  costumeDescEn?: string | null
   reason?: string
 }
 
@@ -228,6 +231,12 @@ export function buildAdviceMessages(input: AdviceInput): ChatMessage[] {
 4. 每条补丁都必须写 reason，一句话说清为什么改。
 5. 只改必须改的。不要顺手润色、不要重排顺序、不要改风格、不要补充用户没提的内容。
 6. 台词（dialogue）是纯台词本身，不要加角色名、引号、<d> 标签或任何格式标记。
+   拆细片段时按「一个 Beat 一个镜头、只做一件事」执行：
+   - 一条 Beat 里又有动作又有台词 = 拆粗了：把动作拆成一条独立的 action 拍放在前面，
+     台词留在原拍（或紧跟其后新 insert 一条），台词拍的 title 只写「谁 + 怎么发话」。
+   - 台词拍之后跟着的动作（放下杯子 / 转身走开 / 低头沉默）同样单独 insert 一条，排在其后。
+   - 听者的表情、沉默、眼神变化 → insert 一条 reaction，不要留在台词拍里。
+   - 只把 title 改短不算拆细：结构上真的多出一条拍才算。
 7. 实体名必须与「实体清单」里已有名称或你在 entities 里新增的名称完全一致。
 8. 如果本次要「增删片段」或「调整分段边界」，就不要输出 fields ——
    段号是按当前结构算的，结构一变就失效，系统会让受影响的段重新生成。
@@ -248,8 +257,10 @@ export function buildAdviceMessages(input: AdviceInput): ChatMessage[] {
   entities[] 实体补丁
              op          必填：update | insert | delete
              name        必填，用名称定位；insert 时是新实体的名字
-             可改字段    type / kind / voiceDesc / textDesc /
-                         nameEn / voiceDescEn / textDescEn
+             可改字段    type / kind / voiceDesc / textDesc / costumeDesc /
+                         nameEn / voiceDescEn / textDescEn / costumeDescEn
+                         （textDesc 只写长相，穿着写 costumeDesc：两者分别喂给
+                          头部图和三视图，混在一起两边衣服永远对不上）
   groups[]   分段补丁
              op          必填：split | merge | refPrev
              split  →    atBeatIndex（在第 N 个片段之前切）

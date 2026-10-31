@@ -48,8 +48,12 @@ export const useProviderStore = defineStore('provider', () => {
 
   async function load() {
     providers.value = await db.providers.toArray()
-    currentId.value =
-      (await kvGet<string | null>('currentProviderId', null)) ?? providers.value[0]?.id ?? null
+    // 存下来的 currentId 可能指向一个已经被删掉的 provider（换机器、手工改过
+    // providers.json 都会出现），不校验的话 current 是 undefined → ready 变 false，
+    // 界面上一堆按钮全灰，看起来像"没配置"，其实列表里明明有可用的。
+    const saved = await kvGet<string | null>('currentProviderId', null)
+    const hit = saved && providers.value.some((p) => p.id === saved)
+    currentId.value = hit ? saved : (providers.value[0]?.id ?? null)
     if (!providers.value.length) {
       await create({
         name: 'DeepSeek',

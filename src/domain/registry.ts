@@ -1,8 +1,9 @@
 import type { Beat, Entity, ID, Lang, ProjectSettings } from './types'
-import { DEFAULT_SETTINGS, isSceneEntity } from './types'
+import { DEFAULT_SETTINGS, isSceneEntity, normalizeEntityType } from './types'
 import { allEntityIdsOf } from './beats'
 import {
   DEFAULT_LANG,
+  entityCostumeDesc,
   entityName,
   entityTextDesc,
   entityVoiceDesc
@@ -166,7 +167,11 @@ export function hasPicture(entity: Entity): boolean {
  */
 export function buildSubjectDefinition(entity: Entity, lang: Lang = DEFAULT_LANG): string {
   // 中文描述可能以。结尾，一并去掉，避免出现 "。" 后再接锚点
-  const visual = entityTextDesc(entity, lang).trim().replace(/[.。]?$/, '')
+  const look = entityTextDesc(entity, lang).trim().replace(/[.。]?$/, '')
+  const wear = entityCostumeDesc(entity, lang).trim().replace(/[.。]?$/, '')
+  // 有参考图：穿着已经在图里（拼接图左边认脸、右边定衣服），文字只补长相，
+  // 再说一遍衣服会和图里的实际穿着抢权重。无图：文字是唯一依据，两段都要带上。
+  const visual = hasPicture(entity) || !wear ? look : [look, wear].filter(Boolean).join(', ')
   const name = entityName(entity, lang)
   const subj = `<Subject ${entity.subjectN ?? '?'}>`
 
@@ -213,7 +218,7 @@ export function newEntity(
     id: patch.id ?? '',
     projectId,
     name: patch.name,
-    type: patch.type ?? 'character',
+    type: patch.type ? normalizeEntityType(patch.type) : 'character',
     kind: patch.kind ?? 'non_speaking',
     subjectN: patch.subjectN ?? null,
     sx: patch.sx ?? null,
@@ -229,9 +234,35 @@ export function newEntity(
 export const ENTITY_TYPE_LABEL: Record<Entity['type'], string> = {
   character: '角色',
   scene: '场景',
-  prop: '道具',
-  ui: '界面',
-  other: '其他'
+  prop: '道具'
+}
+
+/**
+ * 三类主体各自的填写口径。
+ *
+ * 描述字段对三类都是同一个字段（textDesc），但"该写什么"完全不同：
+ * 角色写长相气质、场景写空间与光线、道具写材质与磨损。把提示写在各自身边，
+ * 比给一个笼统的 placeholder 更能减少填出来一堆形容词的情况。
+ */
+export const ENTITY_TYPE_HINT: Record<
+  Entity['type'],
+  { desc: string; placeholder: string; canSpeak: boolean }
+> = {
+  character: {
+    desc: '只写长相：脸型 / 五官 / 发型 / 肤色 / 年龄 / 骨架（穿着写到「服装与身形」）',
+    placeholder: '例如：三十岁出头，寸头，颧骨高，皮肤偏白，右眉一道旧疤',
+    canSpeak: true
+  },
+  scene: {
+    desc: '环境 / 光线 / 时间 / 空间结构',
+    placeholder: '例如：深夜便利店门面，冷白灯管，玻璃上贴着褪色促销海报，门外一条湿漉漉的柏油路',
+    canSpeak: false
+  },
+  prop: {
+    desc: '材质 / 尺寸 / 磨损 / 识别特征',
+    placeholder: '例如：一张旧车票，边角卷起，票面印着 1998 年的日期，背面有圆珠笔写的数字',
+    canSpeak: false
+  }
 }
 
 export const SETTINGS_FALLBACK: ProjectSettings = DEFAULT_SETTINGS

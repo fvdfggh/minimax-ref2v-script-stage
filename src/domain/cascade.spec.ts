@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { fingerprint, reconcileGroups, segmentSourceHash } from './cascade'
+import {
+  FINGERPRINT_VERSION,
+  fingerprint,
+  legacySegmentSourceHashes,
+  reconcileGroups,
+  segmentSourceHash,
+  segmentSourceParts,
+  staleDiffOf
+} from './cascade'
 import type { Beat, Entity, Group } from './types'
 
 function beat(id: string, order: number, patch: Partial<Beat> = {}): Beat {
@@ -211,5 +219,108 @@ describe('级联：段内容指纹', () => {
   it('fingerprint 对不同输入给出不同结果', () => {
     expect(fingerprint('abc')).not.toBe(fingerprint('abd'))
     expect(fingerprint('')).toBe(fingerprint(''))
+  })
+})
+
+describe('segmentSourceParts / staleDiffOf：过期要说清是哪一项变了', () => {
+  const ents = [
+    entity('e1', { name: '楚辞', textDesc: '短发' }),
+    entity('e2', { name: '雨夜街道', type: 'scene' })
+  ]
+  const base = [
+    beat('a', 0, { title: '推门', sceneId: 'e2', entities: ['e1'] }),
+    beat('b', 1, { title: '回头', sceneId: 'e2', entities: ['e1'] })
+  ]
+
+  it('拆开的逐项指纹拼回来，总指纹与 segmentSourceHash 完全一致（老记录不能因此全被判过期）', () => {
+    expect(segmentSourceParts(base, ents).hash).toBe(segmentSourceHash(base, ents))
+  })
+
+  it('改了某一拍的字段：只点名那一拍', () => {
+    const prints = segmentSourceParts(base, ents)
+    const after = [base[0], { ...base[1], visualDesc: '雨水打在窗上' }]
+    const diff = staleDiffOf({ beatHashes: prints.beats, entityHashes: prints.entities, beatIds: ['a', 'b'] }, after, ents)
+    expect(diff.unknown).toBe(false)
+    expect(diff.beats).toEqual(['b'])
+    expect(diff.entities).toEqual([])
+    expect(diff.removed).toEqual([])
+  })
+
+  it('改了主体词条：只点名那个主体', () => {
+    const prints = segmentSourceParts(base, ents)
+    const after = [ents[0], { ...ents[1], name: '雨夜巷口' }]
+    const diff = staleDiffOf({ beatHashes: prints.beats, entityHashes: prints.entities, beatIds: ['a', 'b'] }, base, after)
+    expect(diff.beats).toEqual([])
+    expect(diff.entities).toEqual(['e2'])
+  })
+
+  it('片段被删：记在 removed 里，不冒充「内容改过」', () => {
+    const prints = segmentSourceParts(base, ents)
+    const diff = staleDiffOf({ beatHashes: prints.beats, entityHashes: prints.entities, beatIds: ['a', 'b'] }, [base[0]], ents)
+    expect(diff.removed).toEqual(['b'])
+    expect(diff.beats).toEqual([])
+  })
+
+  it('内容没动：三项都空', () => {
+    const prints = segmentSourceParts(base, ents)
+    const diff = staleDiffOf({ beatHashes: prints.beats, entityHashes: prints.entities, beatIds: ['a', 'b'] }, base, ents)
+    expect(diff).toEqual({ beats: [], entities: [], removed: [], unknown: false })
+  })
+
+  it('老记录没有逐项指纹：unknown，不许瞎指是哪一拍', () => {
+    const diff = staleDiffOf({ beatIds: ['a', 'b'] }, base, ents)
+    expect(diff.unknown).toBe(true)
+    expect(diff.beats).toEqual([])
+    expect(diff.entities).toEqual([])
+  })
+})
+
+describe('staleDiffOf 在老记录上仍能说清「少了几拍」', () => {
+  const ents = [entity('e1', { name: '楚辞' })]
+  const a = beat('a', 0, { title: '推门', entities: ['e1'] })
+  const b = beat('b', 1, { title: '回头', entities: ['e1'] })
+
+  it('只有 beatIds 的老记录：removed 照报，beats/entities 不下结论', () => {
+    const diff = staleDiffOf({ beatIds: ['a', 'b'] }, [a], ents)
+    expect(diff.unknown).toBe(true)
+    expect(diff.removed).toEqual(['b'])
+    expect(diff.beats).toEqual([])
+    expect(diff.entities).toEqual([])
+  })
+})
+
+describe('指纹口径：服装不该让段字段过期', () => {
+  const ents = [entity('e1', { name: '楚辞', textDesc: '短发，瘦削' }) as Entity & { costumeDesc?: string }]
+  const list = [beat('a', 0, { title: '推门', entities: ['e1'] })]
+
+  it('只改服装：指纹不变（三个模型字段写的是事件与声音，跟穿什么无关）', () => {
+    const before = segmentSourceHash(list, ents)
+    const after = segmentSourceHash(list, [{ ...ents[0], costumeDesc: '湿透的外套' }])
+    expect(after).toBe(before)
+  })
+
+  it('改长相：指纹要变', () => {
+    const before = segmentSourceHash(list, ents)
+    const after = segmentSourceHash(list, [{ ...ents[0], textDesc: '长发，魁梧' }])
+    expect(after).not.toBe(before)
+  })
+
+  it('改片段台词：指纹要变', () => {
+    const before = segmentSourceHash(list, ents)
+    const after = segmentSourceHash([{ ...list[0], dialogue: '别过来' }], ents)
+    expect(after).not.toBe(before)
+  })
+
+  it('历史口径（含服装）的指纹在 legacy 里，老记录不会因口径升级被误判', () => {
+    const legacy = legacySegmentSourceHashes(list, ents)
+    expect(legacy).toContain(segmentSourceHash(list, ents, 3))
+    // 现行口径不在 legacy 里：否则升级后所有记录都会"永远没过期"
+    expect(legacy).not.toContain(segmentSourceHash(list, ents, FINGERPRINT_VERSION))
+  })
+
+  it('只有服装不同的两份内容，在旧口径下指纹确实不同（证明兼容层在起作用）', () => {
+    const a = segmentSourceHash(list, ents, 3)
+    const b = segmentSourceHash(list, [{ ...ents[0], costumeDesc: '红色大衣' }], 3)
+    expect(a).not.toBe(b)
   })
 })

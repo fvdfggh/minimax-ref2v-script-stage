@@ -1,4 +1,4 @@
-<script>
+<script lang="ts">
 /**
  * 侧边目录条目。
  * id 必须是目标 DOM 元素的 id（滚动定位用它）；
@@ -17,21 +17,27 @@ export interface SectionNavItem {
 
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { navOpen } from './sectionNavState'
 
 const props = withDefaults(
   defineProps<{
     items: SectionNavItem[]
-    /** 滚动容器的 CSS 选择器，目录悬浮在它右上角、滚动定位也只动它 */
+    /** 滚动容器的 CSS 选择器，目录跟着它滚动高亮、点击定位也只动它 */
     container: string
     title?: string
   }>(),
   { title: '目录' }
 )
 
-const open = ref(true)
+/**
+ * 收起 / 展开由 sectionNavState 统一管：六个阶段是 v-show 同时挂载的，
+ * 状态放实例里会出现「这页收起了、切过去那边又展开」。
+ */
+const open = navOpen
 const activeId = ref('')
 let containerEl: HTMLElement | null = null
 let raf = 0
+const listEl = ref<HTMLElement | null>(null)
 
 /** 参与定位的条目不足 2 个时目录没有意义，直接隐藏 */
 const show = computed(() => props.items.filter((i) => !i.heading).length >= 2)
@@ -103,19 +109,31 @@ watch(
     spy()
   }
 )
+
+// 当前区块变了：目录自己滚一下，别让高亮跑到可视区外
+watch(activeId, () => {
+  const box = listEl.value
+  const el = box?.querySelector<HTMLElement>('.sec-nav-item.is-active')
+  el?.scrollIntoView({ block: 'nearest' })
+})
 </script>
 
 <template>
-  <div v-if="show" class="sec-nav">
-    <!-- 展开：列标签 + 状态色点 -->
-    <div v-if="open" class="sec-nav-panel">
+  <!--
+    右侧常驻目录栏（不是浮层）：和「交付」页左侧的段列表同一个做法 ——
+    占位一列、自己滚、内容区让位。以前这里是 absolute 浮在内容右上角，
+    段一多就把卡片文字压住，看起来像贴了个补丁。
+  -->
+  <aside v-if="show" class="sec-nav" :class="{ 'is-rail': !open }">
+    <template v-if="open">
       <div class="sec-nav-head">
-        <span class="sec-nav-title">{{ title }} · {{ count }}</span>
+        <span class="sec-nav-title">{{ title }}</span>
+        <span class="sec-nav-count">{{ count }}</span>
         <button class="sec-nav-toggle" title="收起目录" @click="open = false">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6" /></svg>
         </button>
       </div>
-      <div class="sec-nav-list">
+      <div ref="listEl" class="sec-nav-list">
         <template v-for="it in items" :key="it.id">
           <div v-if="it.heading" class="sec-nav-heading">{{ it.label }}</div>
           <button
@@ -131,9 +149,9 @@ watch(
           </button>
         </template>
       </div>
-    </div>
+    </template>
 
-    <!-- 收起：一条圆点导航条，仍可点击定位 -->
+    <!-- 收起：一条竖窄条，仍可点击定位 -->
     <div v-else class="sec-nav-rail">
       <button class="sec-nav-expand" title="展开目录" @click="open = true">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6" /></svg>
@@ -148,49 +166,68 @@ watch(
         @click="jump(it.id)"
       />
     </div>
-  </div>
+  </aside>
 </template>
 
 <style scoped>
+/*
+ * 常驻右栏：flex 项而不是 absolute —— 父级已经是 flex 行，这里占一列就够，
+ * 内容区自己 flex:1 让位，再也不会盖住卡片。
+ * 视觉跟交付页的段列表对齐：同宽 220、同底色、只留一条分隔线。
+ */
 .sec-nav {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 20;
+  flex: 0 0 220px;
+  width: 220px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--panel);
   font-size: 12px;
 }
 
-.sec-nav-panel {
-  width: 184px;
-  max-height: calc(100% - 24px);
-  display: flex;
-  flex-direction: column;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(4px);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
-  overflow: hidden;
+.sec-nav.is-rail {
+  flex-basis: 34px;
+  width: 34px;
 }
 
 .sec-nav-head {
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 5px 6px 5px 12px;
+  gap: 6px;
+  padding: 7px 6px 7px 12px;
   border-bottom: 1px solid var(--line);
   background: var(--panel-2);
-  flex: 0 0 auto;
 }
 
 .sec-nav-title {
   font-weight: 600;
   font-size: 12px;
+  color: var(--text);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sec-nav-count {
+  flex: 0 0 auto;
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--hover);
   color: var(--muted);
+  font-size: 11px;
+  line-height: 16px;
+  text-align: center;
+  font-family: var(--mono);
 }
 
 .sec-nav-toggle,
 .sec-nav-expand {
+  flex: 0 0 auto;
   border: none;
   background: transparent;
   color: var(--muted);
@@ -209,48 +246,58 @@ watch(
 }
 
 .sec-nav-list {
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
-  padding: 6px;
+  padding: 8px 8px 12px;
 }
 
 .sec-nav-heading {
   font-size: 11px;
   color: var(--muted);
-  padding: 6px 6px 2px;
+  padding: 8px 6px 4px;
   font-weight: 600;
 }
 
+/* 条目做成和交付页 .seg-item 一样的小卡片：白底 + 细边 + 圆角 */
 .sec-nav-item {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 7px;
   width: 100%;
-  padding: 4px 6px;
-  border: none;
-  background: transparent;
-  border-radius: 6px;
+  padding: 7px 9px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  border-radius: var(--radius);
   cursor: pointer;
   font-size: 12px;
   font-family: inherit;
   color: var(--text);
   text-align: left;
+  line-height: 18px;
+  transition: border-color 0.12s, background 0.12s;
 }
 
 .sec-nav-item:hover {
-  background: #f1f4f9;
+  border-color: var(--accent-line);
+  background: var(--panel-2);
 }
 
+/* 当前区块：和交付页「正在编辑的段」同一种标记 —— 强调色边框 + 左侧色条 */
 .sec-nav-item.is-active {
   background: var(--accent-soft);
   color: var(--accent);
   font-weight: 600;
+  border-color: var(--accent);
+  box-shadow: inset 3px 0 0 var(--accent);
 }
 
 .sec-nav-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #c3c9d4;
+  background: var(--line-strong);
   flex: 0 0 6px;
 }
 
@@ -289,17 +336,13 @@ watch(
 }
 
 .sec-nav-rail {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 5px;
-  padding: 6px 4px;
-  background: rgba(255, 255, 255, 0.96);
-  backdrop-filter: blur(4px);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: var(--shadow);
-  max-height: calc(100% - 24px);
+  gap: 6px;
+  padding: 6px 0 10px;
   overflow-y: auto;
 }
 
@@ -310,8 +353,9 @@ watch(
   border: none;
   padding: 0;
   cursor: pointer;
-  background: #c3c9d4;
+  background: var(--line-strong);
   flex: 0 0 7px;
+  transition: transform 0.12s;
 }
 
 .sec-nav-rail-dot:hover,

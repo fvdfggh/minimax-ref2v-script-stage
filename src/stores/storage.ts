@@ -21,7 +21,14 @@ import { storageMode, useBackend } from '@/db'
 const STORAGE_KEY = 'scriptstage.storage'
 
 export const useStorageStore = defineStore('storage', () => {
-  const baseUrl = ref('http://127.0.0.1:8787')
+  /**
+   * 空串 = 同源。
+   *
+   * 前后台现在由一个端口一起发（后端托管 dist），开发时 vite 把 /api 代理过去，
+   * 两种情况下"同源"都是对的。写死 `127.0.0.1:8787` 反而会在 `localhost:5178`
+   * 访问时变成跨站，会话 cookie 带不过去。
+   */
+  const baseUrl = ref('')
   const dataDir = ref('')
   const defaultDir = ref('')
   const online = ref(false)
@@ -46,7 +53,15 @@ export const useStorageStore = defineStore('storage', () => {
       const raw = localStorage.getItem(STORAGE_KEY)
       if (!raw) return
       const data = JSON.parse(raw) as { baseUrl?: string }
-      if (data.baseUrl) baseUrl.value = data.baseUrl
+      if (!data.baseUrl) return
+      // 老版本存的是 `http://127.0.0.1:8787`。同源之后这个值会让页面变成
+      // 跨站（localhost:5178 → 127.0.0.1:8787），cookie 带不过去、图片全 401。
+      // 只要存的还是"本机 + 默认端口"，就直接归一到同源，不让老配置继续害人。
+      if (/^https?:\/\/(127\.0\.0\.1|localhost):8787\/?$/.test(data.baseUrl.trim())) {
+        baseUrl.value = ''
+        return
+      }
+      baseUrl.value = data.baseUrl
     } catch {
       /* 坏值就用默认 */
     }
@@ -64,7 +79,8 @@ export const useStorageStore = defineStore('storage', () => {
         return false
       }
       baseUrl.value = candidate
-      dataDir.value = health.dataDir
+      // 未登录时后端不回数据目录（匿名不给看磁盘路径），登录后由 config 补上
+      dataDir.value = health.dataDir ?? ''
       online.value = true
       try {
         const cfg = await backendConfig()

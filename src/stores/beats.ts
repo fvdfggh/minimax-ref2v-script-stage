@@ -80,6 +80,19 @@ export const useBeatStore = defineStore('beats', () => {
     return normalized
   }
 
+
+/**
+ * 模型给的布尔字段宽松解析。
+ * 它有时给 true，有时给 "true"，也可能干脆不给 —— 只有明确为真才算真，
+ * 宁可漏标一个转场（退化成镜切，多引一段上段尾帧），也别把普通镜头标成转场。
+ */
+function asBool(v: unknown): boolean | undefined {
+  if (v === true) return true
+  if (v == null || v === false) return undefined
+  const s = String(v).trim().toLowerCase()
+  return s === 'true' || s === '1' || s === 'yes' ? true : undefined
+}
+
   /* ---------------------- 阶段一：拆解结果入库 ---------------------- */
 
   async function replaceAll(projectId: ID, drafts: Stage1Beat[]) {
@@ -91,6 +104,7 @@ export const useBeatStore = defineStore('beats', () => {
         title: d.title,
         dialogue: d.kind === 'dialogue' ? (d.dialogue ?? '').trim() : undefined,
         entities: [],
+        transitionIn: asBool(d.transition),
         enriched: false
       })
     )
@@ -108,6 +122,7 @@ export const useBeatStore = defineStore('beats', () => {
         title: d.title,
         dialogue: d.kind === 'dialogue' ? (d.dialogue ?? '').trim() : undefined,
         entities: [],
+        transitionIn: asBool(d.transition),
         enriched: false
       })
     )
@@ -222,7 +237,7 @@ export const useBeatStore = defineStore('beats', () => {
     await persist(copy)
   }
 
-  /** 每个 Beat 写各自的 patch（阶段五词条回写用） */
+  /** 每个 Beat 写各自的 patch（阶段四词条回写用） */
   async function patchBeats(patches: Array<{ id: ID; patch: Partial<Beat> }>) {
     const byId = new Map(patches.map((p) => [p.id, p.patch]))
     if (!byId.size) return beats.value

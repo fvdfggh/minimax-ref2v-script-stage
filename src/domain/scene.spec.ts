@@ -38,7 +38,7 @@ const chuci = ent({
 const panel = ent({
   id: 'e_panel',
   name: '系统面板',
-  type: 'ui',
+  type: 'prop',
   kind: 'speaking',
   pictureN: 7,
   voiceDesc: 'speaking with a neutral synthesized voice.',
@@ -121,7 +121,7 @@ describe('缝合：场景综合判断', () => {
         order: 1
       })
     ]
-    const seam = analyzeSeam(left, right, { settings: S })
+    const seam = analyzeSeam(left, right, { settings: { ...S, seamPolicy: 'legacy' as const } })
     expect(seam.leftSceneId).toBe('e_cave')
     expect(seam.rightSceneId).toBe('e_world')
     expect(seam.sceneChanged).toBe(true)
@@ -139,7 +139,7 @@ describe('缝合：场景综合判断', () => {
   })
 
   it('关闭场景优先后，换场仍按说话人判定并给出提醒', () => {
-    const settings = { ...S, scenePriorityOnSeam: false }
+    const settings = { ...S, seamPolicy: 'legacy' as const, scenePriorityOnSeam: false }
     const right = [
       beat({
         title: 'r1',
@@ -171,7 +171,7 @@ describe('缝合：场景综合判断', () => {
         order: 1
       })
     ]
-    const seam = analyzeSeam(left, right, { settings: S })
+    const seam = analyzeSeam(left, right, { settings: { ...S, seamPolicy: 'legacy' as const } })
     expect(seam.sceneChanged).toBe(false)
     expect(seam.scenePriorityApplied).toBe(false)
     expect(seam.needsTailCut).toBe(false)

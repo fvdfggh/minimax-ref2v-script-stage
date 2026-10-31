@@ -13,6 +13,7 @@ import {
 } from 'naive-ui'
 import { useProviderStore } from '@/stores/provider'
 import type { Provider } from '@/domain/types'
+import InfoTip from '@/components/common/InfoTip.vue'
 
 const props = defineProps<{ show: boolean }>()
 const emit = defineEmits<{ 'update:show': [boolean] }>()
@@ -158,8 +159,9 @@ function patch(key: keyof Provider, value: unknown) {
               </div>
             </div>
             <div>
-              <div class="muted" style="margin-bottom: 4px">
-                图片模型名（可选，用于生成 / 编辑图片；留空则回退到上面的主模型）
+              <div class="muted row" style="margin-bottom: 4px; gap: 0; align-items: center">
+                图片模型名（可选）
+                <InfoTip size="sm" :width="260" text="用于生成 / 编辑图片；留空则回退到上面的主模型。" />
               </div>
               <n-input
                 :value="provider.current.imageModel ?? ''"

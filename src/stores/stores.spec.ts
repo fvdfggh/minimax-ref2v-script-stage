@@ -221,7 +221,47 @@ describe('stores 端到端（真实 IndexedDB 语义）', () => {
     expect(JSON.parse(json).segments.length).toBe(views2.length)
   })
 
+  it('补帧之后段字段不算过期，但要标出「帧数改过」', async () => {
+    const { p, beats, registry } = await seed()
+    const assembly = useAssemblyStore()
+    const project = useProjectStore()
+    await assembly.load(p.id)
+    await assembly.createAssembly(p.id, '方案A', 'scene_first', beats.beats, S, registry.entityById)
+
+    const build = () =>
+      assembly.buildSegmentViews(
+        assembly.current!,
+        beats.beats,
+        S,
+        registry.entityById,
+        project.fieldSchema
+      )
+
+    const first = build()[0]
+    await assembly.setField(p.id, first.group.id, 'overall_soundscape', 'rain on the awning')
+    // 按「现在这一段」生成：帧数一起记下来
+    await assembly.markGenerated(p.id, first.group.id, first.beats, registry.entities, first.frames)
+
+    const same = build()[0]
+    expect(same.stale).toBe(false)
+    expect(same.framesChanged).toBe(false)
+    expect(same.generatedFrames).toBe(first.frames)
+
+    /*
+     * 补帧：内容一个字没改，只有段长变了。
+     * 这时不该报「上游改过」（那会让人以为台词被谁动了），但字段正文里写着
+     * 「X 帧 = Y 秒」，所以必须标出帧数改过、要复核时长。
+     */
+    await assembly.markGenerated(p.id, first.group.id, first.beats, registry.entities, first.frames - 4)
+    const after = build()[0]
+    expect(after.stale).toBe(false)
+    expect(after.framesChanged).toBe(true)
+    expect(after.generatedFrames).toBe(first.frames - 4)
+  })
+
   it('带自动生成片段（预备镜头 / 黑屏）的段能正常派生与校验', async () => {
+    // 自动片段是 legacy 策略的产物：guide 下段内不该再有它们
+    const LS = { ...S, seamPolicy: 'legacy' as const }
     const { p, beats, registry } = await seed()
     const assembly = useAssemblyStore()
     const project = useProjectStore()
@@ -233,13 +273,13 @@ describe('stores 端到端（真实 IndexedDB 语义）', () => {
       { id: 'g2', beatIds: [beats.ordered[3].id, beats.ordered[4].id] },
       { id: 'g3', beatIds: [beats.ordered[5].id] }
     ]
-    await assembly.createAssembly(p.id, '手工', 'manual', beats.beats, S, registry.entityById)
+    await assembly.createAssembly(p.id, '手工', 'manual', beats.beats, LS, registry.entityById)
     await assembly.setGroups(assembly.current!.id, groups)
 
     const views = assembly.buildSegmentViews(
       assembly.current!,
       beats.beats,
-      S,
+      LS,
       registry.entityById,
       project.fieldSchema
     )
@@ -251,7 +291,7 @@ describe('stores 端到端（真实 IndexedDB 语义）', () => {
       views,
       registry.entities,
       beats.beats,
-      S,
+      LS,
       registry.entityById,
       project.fieldSchema
     )

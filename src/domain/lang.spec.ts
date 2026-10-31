@@ -3,14 +3,14 @@ import { DEFAULT_FIELD_SCHEMA, DEFAULT_SETTINGS } from './types'
 import type { Beat, Entity, ProjectSettings } from './types'
 import { newBeat } from './beats'
 import { validateSegment } from './rules'
-import { DEFAULT_LANG, hasCjkOutsideD, isZh, langOf, normalizeLang } from './lang'
+import { DEFAULT_LANG, deliveryFields, enOnlyKeys, hasCjkOutsideD, isZh, langOf, normalizeLang } from './lang'
 
 /* ------------------------------------------------------------------ *
  * 语言兜底 + 「本地化之前不校验英文」
  *
  * 背景（这是一个真实踩过的坑）：
  *   workLanguage 是后加的功能，功能上线前建的项目，库里存的 settings 没有这个键。
- *   如果「缺字段」被兜成 en，中文工作稿在阶段①~④ 就会满屏报「必须为英文」，
+ *   如果「缺字段」被兜成 en，中文工作稿在阶段①~③ 就会满屏报「必须为英文」，
  *   而用户根本还没做本地化。
  * ------------------------------------------------------------------ */
 
@@ -163,5 +163,76 @@ describe('本地化之前不校验英文', () => {
       }
     ).filter((i) => i.ruleId.startsWith('lang:'))
     expect(issues).toHaveLength(0)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 交付口径：显示 / 门禁 / 打包 / 导出必须看同一份字段
+ *
+ * 真实故障：中文工作稿模式下，中文那份是空的、英文终稿是满的。
+ *   交付页「英文有内容就用英文」→ 页面上字段都填着；
+ *   门禁看中文那份 → 报「字段 summary 为空」×7 段，跑不了；
+ *   导演包打包看中文那份 → 真跑出去还是空的。
+ * 三处各看各的，用户看到的是「明明写了却说没写」。
+ * ------------------------------------------------------------------ */
+
+describe('交付口径字段', () => {
+  const zh = { summary: '中文概述', overall_soundscape: '雨声' }
+  const en = { summary: '[reference generation] English', overall_soundscape: 'rain' }
+
+  it('中文工作稿模式一律看中文那份（哪怕英文终稿是满的）', () => {
+    expect(deliveryFields(zh, en, 'zh')).toEqual(zh)
+  })
+
+  it('英文终稿模式看英文那份', () => {
+    expect(deliveryFields(zh, en, 'en')).toEqual(en)
+  })
+
+  it('英文整份为空时退回中文工作稿，而不是给一张白纸', () => {
+    expect(deliveryFields(zh, {}, 'en')).toEqual(zh)
+    expect(deliveryFields(zh, { summary: '   ' }, 'en')).toEqual(zh)
+    expect(deliveryFields(zh, undefined, 'en')).toEqual(zh)
+  })
+
+  it('语言缺省按中文工作稿处理（老项目没有 workLanguage）', () => {
+    expect(deliveryFields(zh, en, undefined)).toEqual(zh)
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 「只有英文、没有中文」的模型字段
+ *
+ * 真实场景：切到英文终稿后，模型字段只写英文那一侧；再切回中文，
+ * 这些字段仍是英文，界面看起来像「切不回去」。
+ * ------------------------------------------------------------------ */
+
+describe('只有英文的模型字段', () => {
+  const schema = [
+    { key: 'summary', source: 'llm' },
+    { key: 'overall_soundscape', source: 'llm' },
+    { key: 'detailed_description', source: 'derived' }
+  ]
+
+  it('中文空、英文有 → 算需要回写', () => {
+    const zh = { summary: '' }
+    const en = { summary: 'Rain at night', overall_soundscape: 'rain hum' }
+    expect(enOnlyKeys(schema, zh, en)).toEqual(['summary', 'overall_soundscape'])
+  })
+
+  it('两侧都有内容时不算（中文是好的，英文是另一份）', () => {
+    const zh = { summary: '雨夜', overall_soundscape: '雨声' }
+    const en = { summary: 'Rain', overall_soundscape: 'rain' }
+    expect(enOnlyKeys(schema, zh, en)).toEqual([])
+  })
+
+  it('派生字段不进来：引擎按词条各算一遍，切回中文立刻就是中文', () => {
+    const zh = {}
+    const en = { detailed_description: 'desc only in en' }
+    expect(enOnlyKeys(schema, zh, en)).toEqual([])
+  })
+
+  it('空白不算有内容', () => {
+    expect(enOnlyKeys(schema, { summary: '   ' }, { summary: 'Rain' })).toEqual(['summary'])
+    expect(enOnlyKeys(schema, {}, { summary: '  ' })).toEqual([])
   })
 })

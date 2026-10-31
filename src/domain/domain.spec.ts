@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SETTINGS } from './types'
+import { DEFAULT_SETTINGS, ENTITY_TYPES, normalizeEntityType } from './types'
 import type { Beat, Entity } from './types'
 import { beatFrames, countHanzi, dialogueFrames, timecode } from './timing'
 import { buildSubjectDefinition, computeNumbering, normalizeVoiceDesc } from './registry'
@@ -53,7 +53,7 @@ const chuci = ent({
 const panel = ent({
   id: 'e_panel',
   name: '系统面板',
-  type: 'ui',
+  type: 'prop',
   kind: 'speaking',
   pictureN: 7,
   voiceDesc: 'speaking with a neutral synthesized voice, crisp and rhythmic.',
@@ -251,69 +251,150 @@ describe('片段拆分', () => {
 
 /* ------------------------------ 缝合 ------------------------------ */
 
-describe('缝合引擎', () => {
+describe('接缝分类', () => {
+  const byId = new Map(ALL.map((e) => [e.id, e]))
   const left = [
     beat({ title: 'l1', kind: 'action', entities: ['e_chuci'], focusEntityId: 'e_chuci', order: 0 }),
     beat({ title: 'l2', kind: 'dialogue', dialogue: '我不信。', speakerId: 'e_chuci', entities: ['e_chuci'], order: 1 })
   ]
 
-  it('右段首位说话人已在左段出现 -> 尾帧最后 0.3s 切镜到该说话人', () => {
+  it('同场同主体：顺接，强度 2，两边都引用', () => {
     const right = [
-      beat({ title: 'r1', kind: 'action', entities: ['e_cave'], focusEntityId: 'e_cave', order: 4 }),
-      beat({ title: 'r2', kind: 'dialogue', dialogue: '检测到宿主。', speakerId: 'e_panel', entities: ['e_panel'], order: 5 })
+      beat({ title: 'r', kind: 'dialogue', dialogue: '那就看着。', speakerId: 'e_chuci', entities: ['e_chuci'], order: 2 })
     ]
-    // 左段中途出现过 e_panel，但末帧是 e_chuci
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('take')
+    expect(seam.strength).toBe(2)
+    expect(seam.continuityToNext).toBe(true)
+    expect(seam.continuityFromPrev).toBe(true)
+    expect(seam.reason).toContain('楚辞')
+  })
+
+  it('同场换人：镜切，强度 1，照样引用上段', () => {
+    const right = [
+      beat({ title: 'r', kind: 'reaction', entities: ['e_panel'], focusEntityId: 'e_panel', order: 2 })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('cut')
+    expect(seam.strength).toBe(1)
+    expect(seam.continuityFromPrev).toBe(true)
+  })
+
+  it('主体完全不重叠也不算转场：同一个空间里就有环境可参考', () => {
+    const right = [
+      beat({ title: 'r', kind: 'insert', entities: ['e_panel'], focusEntityId: 'e_panel', order: 2 })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('cut')
+    expect(seam.strength).toBe(1)
+  })
+
+  it('场景实体变了：转场，强度 0，不引导下段', () => {
+    const right = [
+      beat({
+        title: 'r',
+        kind: 'action',
+        entities: ['e_chuci'],
+        focusEntityId: 'e_chuci',
+        sceneId: 'e_world',
+        order: 2
+      })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('transition')
+    expect(seam.strength).toBe(0)
+    expect(seam.continuityToNext).toBe(false)
+    expect(seam.continuityFromPrev).toBe(false)
+    expect(seam.reason).toContain('换场')
+    expect(seam.reason).toContain('新世界')
+  })
+
+  it('首拍就是换场镜头：转场', () => {
+    const right = [
+      beat({ title: 'r', kind: 'scene_switch', entities: ['e_chuci'], focusEntityId: 'e_chuci', order: 2 })
+    ]
+    expect(analyzeSeam(left, right, { settings: S, entityById: byId }).kind).toBe('transition')
+  })
+
+  it('首拍重新建立环境：镜切而不是转场，首帧锚点要留着', () => {
+    const right = [
+      beat({ title: 'r', kind: 'establishing', entities: ['e_cave'], focusEntityId: 'e_cave', order: 2 })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('cut')
+    expect(seam.strength).toBe(1)
+    expect(seam.continuityFromPrev).toBe(true)
+  })
+
+  it('首拍标了转场进入：同场同主体也算转场（时间跳跃靠这个字段，不靠猜词）', () => {
+    const right = [
+      beat({
+        title: 'r',
+        kind: 'dialogue',
+        dialogue: '三天后。',
+        speakerId: 'e_chuci',
+        entities: ['e_chuci'],
+        transitionIn: true,
+        order: 2
+      })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.kind).toBe('transition')
+    expect(seam.strength).toBe(0)
+  })
+
+  it('人工指定优先于一切自动判据', () => {
+    const right = [
+      beat({
+        title: 'r',
+        kind: 'action',
+        entities: ['e_chuci'],
+        focusEntityId: 'e_chuci',
+        sceneId: 'e_world',
+        order: 2
+      })
+    ]
+    expect(analyzeSeam(left, right, { settings: S, entityById: byId, override: 'cut' }).kind).toBe('cut')
+    expect(analyzeSeam(left, right, { settings: S, entityById: byId, override: 'take' }).kind).toBe('take')
+    expect(analyzeSeam(left, right, { settings: S, entityById: byId, override: 'auto' }).kind).toBe('transition')
+  })
+
+  it('接缝处缺场景：不硬判转场，落到镜切并提示补场景', () => {
+    const right = [
+      beat({ title: 'r', kind: 'action', entities: ['e_chuci'], focusEntityId: 'e_chuci', sceneId: undefined, order: 2 })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    // 一侧没有场景时不硬判转场：主体相同就是顺接，同时提示去补场景
+    expect(seam.kind).not.toBe('transition')
+    expect(seam.issues.some((i) => i.code === 'seam:missing-scene')).toBe(true)
+  })
+
+  it('guide 策略下不再要求预备镜头 / 尾帧切镜 / 黑屏', () => {
+    const right = [
+      beat({ title: 'r', kind: 'dialogue', dialogue: '那就看着。', speakerId: 'e_panel', entities: ['e_panel'], order: 2 })
+    ]
+    const seam = analyzeSeam(left, right, { settings: S, entityById: byId })
+    expect(seam.needsPreshoot).toBe(false)
+    expect(seam.needsTailCut).toBe(false)
+    expect(seam.blackFallback).toBe(false)
+    expect(seam.tailCutTargetId).toBeNull()
+  })
+
+  it('legacy 策略保留旧行为：段首预备镜头 + 段尾切镜', () => {
+    const legacyS = { ...S, seamPolicy: 'legacy' as const }
     const withPanel = [
       ...left,
       beat({ title: 'l3', kind: 'insert', entities: ['e_panel'], focusEntityId: 'e_panel', order: 2 }),
       beat({ title: 'l4', kind: 'action', entities: ['e_chuci'], focusEntityId: 'e_chuci', order: 3 })
     ]
-    const seam = analyzeSeam(withPanel, right, { settings: S })
-    expect(seam.lastSubjectId).toBe('e_chuci')
-    expect(seam.firstSpeakerId).toBe('e_panel')
+    const right = [
+      beat({ title: 'r', kind: 'dialogue', dialogue: '检测到宿主。', speakerId: 'e_panel', entities: ['e_panel'], order: 4 })
+    ]
+    const seam = analyzeSeam(withPanel, right, { settings: legacyS })
+    expect(seam.needsPreshoot).toBe(true)
     expect(seam.needsTailCut).toBe(true)
     expect(seam.tailCutTargetId).toBe('e_panel')
-    expect(seam.needsPreshoot).toBe(true)
-    expect(seam.blackFallback).toBe(false)
     expect(seam.continuityToNext).toBe(true)
-  })
-
-  it('左段末帧主体就是右段说话人 -> 不需要切镜', () => {
-    const right = [
-      beat({ title: 'r', kind: 'dialogue', dialogue: '我不信。', speakerId: 'e_chuci', entities: ['e_chuci'], order: 2 })
-    ]
-    const seam = analyzeSeam(left, right, { settings: S })
-    expect(seam.lastSubjectId).toBe('e_chuci')
-    expect(seam.needsTailCut).toBe(false)
-    expect(seam.needsPreshoot).toBe(true)
-    expect(seam.continuityToNext).toBe(true)
-  })
-
-  it('左段完全没有右段说话人 -> 黑屏兜底，连续性一律 false', () => {
-    const right = [
-      beat({ title: 'r', kind: 'dialogue', dialogue: '检测到宿主。', speakerId: 'e_panel', entities: ['e_panel'], order: 2 })
-    ]
-    const seam = analyzeSeam(left, right, { settings: S })
-    expect(seam.blackFallback).toBe(true)
-    expect(seam.needsTailCut).toBe(false)
-    expect(seam.continuityToNext).toBe(false)
-    expect(seam.continuityFromPrev).toBe(false)
-    expect(seam.issues.some((i) => i.code === 'seam:black-fallback')).toBe(true)
-  })
-
-  it('右段无台词时不要求预备镜头，只按主体判定切镜', () => {
-    const right = [
-      beat({ title: 'r', kind: 'establishing', entities: ['e_cave'], focusEntityId: 'e_cave', order: 3 })
-    ]
-    const leftWithCave = [
-      beat({ title: 'c', kind: 'establishing', entities: ['e_cave'], focusEntityId: 'e_cave', order: 0 }),
-      ...left
-    ]
-    const seam = analyzeSeam(leftWithCave, right, { settings: S })
-    expect(seam.needsPreshoot).toBe(false)
-    expect(seam.lastSubjectId).toBe('e_chuci')
-    expect(seam.needsTailCut).toBe(true)
-    expect(seam.tailCutTargetId).toBe('e_cave')
   })
 })
 
@@ -561,5 +642,22 @@ describe('makeEntityResolver', () => {
     const empty = makeEntityResolver([])
     expect(empty('楚辞').match).toBe('none')
     expect(empty('anything').match).toBe('none')
+  })
+})
+
+describe('主体三类', () => {
+  it('固定顺序是 角色 → 场景 → 道具', () => {
+    expect([...ENTITY_TYPES]).toEqual(['character', 'scene', 'prop'])
+  })
+
+  it('三类原样返回，历史 ui / other / 认不出的都收进口径', () => {
+    expect(normalizeEntityType('character')).toBe('character')
+    expect(normalizeEntityType('scene')).toBe('scene')
+    expect(normalizeEntityType('prop')).toBe('prop')
+    // 老项目里的界面 / 其他主体：不能丢，归到道具
+    expect(normalizeEntityType('ui')).toBe('prop')
+    expect(normalizeEntityType('other')).toBe('prop')
+    expect(normalizeEntityType(undefined)).toBe('prop')
+    expect(normalizeEntityType(42)).toBe('prop')
   })
 })

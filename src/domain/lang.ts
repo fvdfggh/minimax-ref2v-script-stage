@@ -5,7 +5,7 @@ export type { Lang }
 /* ------------------------------------------------------------------ *
  * 流水线语言
  *
- *   zh —— 阶段①~④ 全部用中文撰写，人工审阅 / 修改都不必读英文
+ *   zh —— 阶段①~③ 全部用中文撰写，人工审阅 / 修改都不必读英文
  *   en —— 直接生成规范英文终稿，跳过本地化阶段
  *
  * 关键设计：结构锚点在中英两种语言下都保持英文原文 ——
@@ -21,7 +21,7 @@ export type { Lang }
  * ★ 必须与 ProjectSettings.workLanguage 的默认值（DEFAULT_SETTINGS.workLanguage = 'zh'）一致。
  * 这两处一旦不一致，就会出现最难查的一类问题：
  * 在语言字段还没写进库的项目上，「缺字段」被兜成 en，
- * 于是中文工作稿在阶段①~④ 就满屏报「必须为英文」—— 本地化还没做，校验先炸了。
+ * 于是中文工作稿在阶段①~③ 就满屏报「必须为英文」—— 本地化还没做，校验先炸了。
  */
 export const DEFAULT_LANG: Lang = 'zh'
 
@@ -39,7 +39,7 @@ export function langOf(settings: { workLanguage?: Lang } | undefined): Lang {
 }
 
 export const LANG_LABEL: Record<Lang, string> = {
-  zh: '中文（阶段①~④ 中文，阶段⑤ 转英文）',
+  zh: '中文（阶段①~③ 中文，阶段④ 转英文）',
   en: '英文（全程直接产出英文终稿）'
 }
 
@@ -59,6 +59,16 @@ export function entityName(e: Entity, lang: Lang): string {
 
 export function entityTextDesc(e: Entity, lang: Lang): string {
   return isZh(lang) ? (e.textDesc ?? '') : pick(e.textDescEn, e.textDesc ?? '')
+}
+
+/**
+ * 服装与身形。与 entityTextDesc 分开取词条：两者在出图时喂给**不同**的步骤
+ * （长相只进头部图，服装只进三视图），合成一句就会让头部图里长出衣服。
+ */
+export function entityCostumeDesc(e: Entity, lang: Lang): string {
+  return isZh(lang)
+    ? (e.costumeDesc ?? '')
+    : pick(e.costumeDescEn, e.costumeDesc ?? '')
 }
 
 /** 音色描述：必须跨段逐字一致，英文模式下取词条表的英文版 */
@@ -135,6 +145,49 @@ const D_TAG_RE = /<d>[\s\S]*?<\/d>/g
 export function hasCjkOutsideD(text: string | undefined): boolean {
   if (!text) return false
   return CJK_RE.test(text.replace(D_TAG_RE, ''))
+}
+
+/* ------------------------------------------------------------------ *
+ * 交付口径：一份段字段，四个地方必须看同一份
+ *
+ * 段里的字段存两份（中文工作稿 / 英文终稿）。以前各看各的：
+ *   ⑤ 交付页「英文有内容就用英文」、门禁看中文、打包提示词看中文 ——
+ * 结果是**页面明明填满了、门禁照样报「字段 summary 为空」**，而且跑出去
+ * 的提示词和页面上看到的还不是同一份。
+ *
+ * 现在统一到这一条：**跟着工作语言走**。
+ *   zh —— 阶段①~③ 的中文工作稿（还没本地化，交付的自然是它）
+ *   en —— 英文终稿；某段英文整份缺失时才退回中文工作稿（老项目 / 半本地化）
+ * ------------------------------------------------------------------ */
+
+export function deliveryFields(
+  fields: Record<string, string>,
+  fieldsEn: Record<string, string> | undefined,
+  lang: Lang | undefined
+): Record<string, string> {
+  if (isZh(lang)) return fields
+  const en = fieldsEn ?? {}
+  return Object.values(en).some((x) => (x ?? '').trim()) ? en : fields
+}
+
+/**
+ * 只有英文、没有中文的**模型字段**。
+ *
+ * 切到英文终稿时，模型字段（summary / overall_soundscape / non_diegetic_music）
+ * 的英文会被就地写进英文那一侧，中文那一侧并不存在。再切回中文，
+ * 这些字段仍然是空的 ⇒ 页面继续显示英文，看起来像「切不回去」。
+ *
+ * 派生字段不必进来：它们由引擎按词条各算一遍，切回中文立刻就是中文。
+ */
+export function enOnlyKeys(
+  schema: Array<{ key: string; source?: string }>,
+  zh: Record<string, string>,
+  en: Record<string, string>
+): string[] {
+  return schema
+    .filter((f) => f.source === 'llm')
+    .map((f) => f.key)
+    .filter((k) => (en[k] ?? '').trim() && !(zh[k] ?? '').trim())
 }
 
 /** 整段所有字段里，还有哪些字段残留了 <d> 之外的中文 */

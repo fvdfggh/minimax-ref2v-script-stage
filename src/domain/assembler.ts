@@ -5,6 +5,7 @@ import {
   defaultRefPrev,
   fitSegmentFrames,
   maxAlignedFrames,
+  refPrevOfStrength,
   resolveRefPrev
 } from './frames'
 import { collectEntities, isComposable, resolveSubjectId, sceneOf } from './beats'
@@ -89,10 +90,15 @@ function boundaryCost(beats: Beat[], i: number, cfg: StrategyConfig, ctx: Assemb
     cost += w.speaker
   }
 
-  // 近似缝合代价：只看边界两侧相邻片段
+  /*
+   * 近似缝合代价：只看边界两侧相邻片段。
+   *
+   * guide 策略下"黑屏兜底"已经不发生了，代价改由接缝类型承担：
+   * 转场要重新起画面（贵），镜切只是换个机位（轻），顺接几乎免费。
+   */
   const seam = analyzeSeam([prev], [cur], ctx)
-  if (seam.blackFallback) cost += w.seam
-  else if (seam.needsTailCut) cost += w.cut
+  if (seam.kind === 'transition') cost += w.cut
+  else if (seam.kind === 'cut') cost += w.cut * 0.4
 
   return cost
 }
@@ -156,7 +162,10 @@ export interface AssembleReport {
   /** 被排除、不参与组合的 Beat（未绑定实体） */
   skipped: Beat[]
   seamIssues: number
+  /** guide 策略下恒 0（不再有黑屏兜底），旧字段保留给界面兼容 */
   blackFallbacks: number
+  /** 转场接缝数 */
+  transitions: number
   totalFrames: number
 }
 
@@ -170,7 +179,7 @@ export function assemble(
   const skipped = allBeats.filter((b) => !isComposable(b))
 
   if (composable.length === 0) {
-    return { groups: [], skipped, seamIssues: 0, blackFallbacks: 0, totalFrames: 0 }
+    return { groups: [], skipped, seamIssues: 0, blackFallbacks: 0, transitions: 0, totalFrames: 0 }
   }
 
   let groups: Group[]
@@ -186,12 +195,16 @@ export function assemble(
       groups.push({ id: uid('grp'), beatIds: slice.map((b) => b.id) })
     }
   }
-  // 引用上段：首段不引用，其余默认引用
-  groups.forEach((g, i) => {
-    g.refPrev = defaultRefPrev(i)
-  })
-
   const refined = refineBySeam(groups, composable, cfg, ctx)
+
+  /*
+   * 引用上段 / 帧长家族，改成由**接缝**决定。
+   *
+   * 顺序很关键：refineBySeam 会挪边界，边界一变接缝跟着变，所以只能等它
+   * 定下来再赋 refPrev。人工改过的（g.refPrev != null）一律不动。
+   */
+  assignRefPrev(refined, composable, ctx)
+
   const stats = measure(refined, composable, ctx)
 
   return {
@@ -199,6 +212,7 @@ export function assemble(
     skipped,
     seamIssues: stats.issues,
     blackFallbacks: stats.black,
+    transitions: stats.transition,
     totalFrames: stats.total
   }
 }
@@ -209,6 +223,10 @@ export function assemble(
  *
  * 迭代多轮：修好第 k 处黑屏会改变第 k 处左边的段内容，可能让第 k-1 处
  * 重新黑屏。单遍前向扫描修一处坏一处，这里循环到稳定（最多 3 轮，必终止）。
+ *
+ * guide 策略下没有"黑屏兜底"这回事（不引导就各自开头），这一轮优化直接跳过。
+ * 转场本身是内容决定的 —— 换个段落边界也换不掉"换地方"，硬挪只会把
+ * 换场拍推到另一段的段首，判出来还是转场。
  */
 function refineBySeam(
   groups: Group[],
@@ -216,12 +234,13 @@ function refineBySeam(
   cfg: StrategyConfig,
   ctx: AssembleContext
 ): Group[] {
+  const out = groups.map((g) => ({ ...g, beatIds: [...g.beatIds] }))
+  if ((ctx.settings.seamPolicy ?? 'guide') !== 'legacy') return out
+
   const cap = capacityOf(cfg, ctx)
   const byId = new Map(beats.map((b) => [b.id, b]))
   const getBeats = (g: Group) => g.beatIds.map((id) => byId.get(id)!).filter(Boolean)
   const framesOf = (g: Group) => getBeats(g).reduce((s, b) => s + beatFrames(b, ctx.settings), 0)
-
-  const out = groups.map((g) => ({ ...g, beatIds: [...g.beatIds] }))
 
   for (let pass = 0; pass < 3; pass++) {
     let changed = false
@@ -270,12 +289,43 @@ function refineBySeam(
   return out
 }
 
+/**
+ * 按接缝给每段定「引不引用上段」（同时决定帧长家族）。
+ *
+ * 首段永远不引用；其余看与**上一段**接缝的引用强度。
+ * 人工设过 refPrev 的一律不动 —— 那是用户明确要的，不该被自动判定改掉。
+ */
+function assignRefPrev(groups: Group[], beats: Beat[], ctx: AssembleContext): void {
+  const policy = ctx.settings.seamPolicy ?? 'guide'
+  const byId = new Map(beats.map((b) => [b.id, b]))
+  const getBeats = (g: Group) => g.beatIds.map((id) => byId.get(id)!).filter(Boolean)
+
+  groups.forEach((g, i) => {
+    // 人工改过的才不动；老数据里自动赋的 refPrev 是旧口径，要按接缝纠正
+    if (g.refPrevManual) return
+    if (policy === 'legacy') {
+      g.refPrev = defaultRefPrev(i)
+      return
+    }
+    if (i === 0) {
+      g.refPrev = false
+      return
+    }
+    const seam = analyzeSeam(getBeats(groups[i - 1]), getBeats(g), {
+      ...ctx,
+      override: groups[i - 1].seamToNext
+    })
+    g.refPrev = refPrevOfStrength(seam.strength)
+  })
+}
+
 /* ----------------------------- 度量 ----------------------------- */
 
 export interface MeasureResult {
   issues: number
   black: number
-  cut: number
+  /** 转场接缝数（guide）/ 尾帧切镜数（legacy，仅统计口径不同） */
+  transition: number
   total: number
   perGroup: Array<{
     frames: number
@@ -295,20 +345,34 @@ export function measure(
   const byId = new Map(beats.map((b) => [b.id, b]))
   const list = groups.map((g) => g.beatIds.map((id) => byId.get(id)!).filter(Boolean))
 
+  const policy = ctx.settings.seamPolicy ?? 'guide'
+
   let issues = 0
   let black = 0
-  let cut = 0
+  let transition = 0
   let total = 0
 
   const perGroup = list.map((bs, i) => {
     const frames = bs.reduce((s, b) => s + beatFrames(b, ctx.settings), 0)
-    const refPrev = resolveRefPrev(groups[i] ?? {}, i)
+    const seam =
+      i > 0
+        ? analyzeSeam(list[i - 1], bs, { ...ctx, override: groups[i - 1]?.seamToNext })
+        : null
+    // 帧长家族跟着接缝走；legacy 仍按序号，人工设过的一律尊重
+    const g = groups[i]
+    const refPrev =
+      policy === 'legacy'
+        ? resolveRefPrev(g ?? {}, i)
+        : g?.refPrevManual
+          ? (g.refPrev ?? false)
+          : i === 0
+            ? false
+            : refPrevOfStrength(seam?.strength ?? 0)
     const fit = fitSegmentFrames(frames, refPrev, ctx.settings.maxSegmentFrames)
     total += fit.target
-    const seam = i > 0 ? analyzeSeam(list[i - 1], bs, ctx) : null
     if (seam) {
       if (seam.blackFallback) black++
-      if (seam.needsTailCut) cut++
+      if (seam.kind === 'transition') transition++
       issues += seam.issues.filter((x) => x.level !== 'info').length
     }
     return {
@@ -321,7 +385,7 @@ export function measure(
     }
   })
 
-  return { issues, black, cut, total, perGroup }
+  return { issues, black, transition, total, perGroup }
 }
 
 export function newAssembly(

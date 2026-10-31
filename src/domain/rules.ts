@@ -1,5 +1,5 @@
 import { AUTO_KINDS } from './types'
-import { beatFrames, isOverLimit, countHanzi, dialogueFrames, timecode } from './timing'
+import { beatFrames, countHanzi, dialogueFrames, timecode } from './timing'
 import {
   familyLabel,
   fitSegmentFrames,
@@ -123,16 +123,22 @@ export function validateSegment(input: SegmentValidateInput, ctx: ValidateContex
   }
 
   if (fit.overLimit) {
+    // 上限可以是「设定值」，也可以是该帧长家族的网格上限（设定 90 → 引用上段只能到 85）。
+    // 两者不同时都说出来，否则"下限 90（上限 90）"这种自相矛盾的说法只会让人怀疑是不是算错了。
+    const capNote =
+      fit.cap === settings.maxSegmentFrames
+        ? `超过上限 ${settings.maxSegmentFrames} 帧`
+        : `超过 ${familyLabel(refPrev)} 的上限 ${fit.cap} 帧（设定上限 ${settings.maxSegmentFrames} 帧）`
     issues.push({
       ruleId: 'frames:limit',
       level: 'error',
-      message: `本段所需 ${fit.target} 帧，超过该模式下限 ${fit.cap} 帧（上限 ${settings.maxSegmentFrames} 帧），必须拆段`
+      message: `本段所需 ${fit.target} 帧，${capNote}，必须拆段`
     })
-  } else if (isOverLimit(frames, settings)) {
+  } else if (frames > fit.cap) {
     issues.push({
       ruleId: 'frames:limit',
       level: 'error',
-      message: `本段 ${frames} 帧，超过上限 ${settings.maxSegmentFrames} 帧`
+      message: `本段 ${frames} 帧，超过上限 ${fit.cap} 帧`
     })
   }
 
@@ -317,9 +323,16 @@ export function validateSegment(input: SegmentValidateInput, ctx: ValidateContex
     }
   }
 
-  // --- 预备镜头 ---
+  /*
+   * 下面两条（预备镜头 / 尾帧切镜黑屏）只在 legacy 策略下成立。
+   * guide 策略把段间衔接交给"引导 + 关键帧"，段内不再有这两个自动片段，
+   * 还按旧口径要求它们，等于逼着用户把刚删掉的补丁加回来。
+   */
+  const legacySeam = (settings.seamPolicy ?? 'guide') === 'legacy'
+
+  // --- 预备镜头（legacy）---
   const speaker = firstSpeakerId(narrativeBeats)
-  if (speaker && settings.autoPreshoot) {
+  if (legacySeam && speaker && settings.autoPreshoot) {
     const firstShot = beats[0]
     if (!firstShot || firstShot.kind !== 'preshoot') {
       issues.push({
@@ -350,9 +363,9 @@ export function validateSegment(input: SegmentValidateInput, ctx: ValidateContex
     }
   }
 
-  // --- 段尾切镜 / 黑屏兜底 ---
+  // --- 段尾切镜 / 黑屏兜底（legacy）---
   const tail = beats[beats.length - 1]
-  if (input.nextSeam) {
+  if (legacySeam && input.nextSeam) {
     if (input.nextSeam.blackFallback) {
       if (!tail || tail.kind !== 'black') {
         issues.push({
@@ -390,7 +403,7 @@ export function validateSegment(input: SegmentValidateInput, ctx: ValidateContex
   }
 
   // --- 中文只允许出现在 <d> 内 ---
-  // 中文工作阶段（阶段①~④）自由描述本来就是中文，跳过；
+  // 中文工作阶段（阶段①~③）自由描述本来就是中文，跳过；
   // 本地化完成后（lang = en）这条规则就是「是否还有漏译」的门禁。
   if (!zhMode) {
     if (hasCjkOutsideD(dd)) {
@@ -408,6 +421,26 @@ export function validateSegment(input: SegmentValidateInput, ctx: ValidateContex
           level: 'error',
           field: key,
           message: `${key} 必须为英文`
+        })
+      }
+    }
+  } else {
+    /*
+     * 中文工作稿的镜像检查：本地化之前（阶段①~③）这几个字段本来就该是中文。
+     *
+     * 少这一条，本地化前的页面可能整段是英文却毫无提示 —— 看着像"已经做好了"，
+     * 实际是旧版规则 / 桩模型留下的内容；到了 ⑤ 再把英文译成英文，越走越偏。
+     * N/A（无配乐）是结构字面量，不算漏写中文。
+     */
+    for (const key of ['summary', 'overall_soundscape', 'non_diegetic_music']) {
+      const v = (fields[key] ?? '').trim()
+      if (!v || /^N\/A$/i.test(v)) continue
+      if (countHanzi(v) === 0) {
+        issues.push({
+          ruleId: 'lang:not-zh',
+          level: 'warn',
+          field: key,
+          message: `${key} 现在是英文。本地化之前（阶段①~③）应当用中文写；从英文终稿切回中文时，已译成英文的模型字段不会自动还原，需要在「③ 组合与缝合」下面那块字段补全区重新生成或手工改写`
         })
       }
     }
@@ -642,6 +675,7 @@ export const FIELD_FIXABLE_RULES = new Set<string>([
   // 语言
   'lang:cjk',
   'lang:cjk-outside-d',
+  'lang:not-zh',
   // 声场 / 配乐
   'music:empty',
   'sound:repeat-dialogue'
@@ -683,5 +717,5 @@ export function splitIssuesByScope(issues: RuleIssue[]): {
 export const SCOPE_HINT: Record<FixScope, string> = {
   field: '可由 AI 改写字段修',
   structure: '需回到「③ 组合与缝合」或「① 拆解」「② 细节填充」调整片段',
-  registry: '需回到「实体与素材」修正注册表'
+  registry: '需回到「主体登记」tab 修正主体表'
 }

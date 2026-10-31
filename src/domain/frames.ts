@@ -1,5 +1,6 @@
 import { beatFrames, dialogueFrames } from './timing'
-import type { Beat, ID, ProjectSettings } from './types'
+import type { Beat, GuideStrength, ID, ProjectSettings } from './types'
+import { DEFAULT_SETTINGS } from './types'
 
 /* ------------------------------------------------------------------ *
  * 帧长度补正
@@ -111,8 +112,18 @@ export function alignedOptions(refPrev: boolean, maxSegmentFrames: number): numb
 
 /* ------------------------- 副帧分摊 ------------------------- */
 
-/** 一个片段最多能被压到多少帧：台词不能短于台词本身，其余至少留 1 帧 */
-export function minFramesOf(beat: Beat, settings: ProjectSettings): number {
+/**
+ * 一个片段最多能被压到多少帧：台词不能短于台词本身，其余至少留 1 帧。
+ *
+ * `voicedFrames` 是配音测出来的真实需求。有配音时以它为准 —— 按字数估的
+ * 长度只是平均值，慢一点的音色会被它压到截断。没配音时才退回字数估算。
+ */
+export function minFramesOf(
+  beat: Beat,
+  settings: ProjectSettings,
+  voicedFrames = 0
+): number {
+  if (voicedFrames > 0) return Math.max(1, voicedFrames)
   if (beat.kind === 'dialogue') {
     return Math.max(1, dialogueFrames(beat.dialogue, settings.fps))
   }
@@ -130,7 +141,9 @@ export function minFramesOf(beat: Beat, settings: ProjectSettings): number {
 export function distributePad(
   beats: Beat[],
   padTotal: number,
-  settings: ProjectSettings
+  settings: ProjectSettings,
+  /** 逐片段的压缩下限（有配音的片段用配音真实长度），缺省按台词字数 */
+  floors?: Record<ID, number> | null
 ): Record<ID, number> {
   const out: Record<ID, number> = {}
   if (!beats.length) return out
@@ -159,7 +172,9 @@ export function distributePad(
 
   // 压缩
   const need = -padTotal
-  const capacity = beats.map((b, i) => Math.max(0, actual[i] - minFramesOf(b, settings)))
+  const capacity = beats.map((b, i) =>
+    Math.max(0, actual[i] - minFramesOf(b, settings, floors?.[b.id] ?? 0))
+  )
 
   let assigned = 0
   beats.forEach((b, i) => {
@@ -203,6 +218,8 @@ export interface BuildPadInput {
   /** 目标副帧总量，可为负 */
   padTotal: number
   settings: ProjectSettings
+  /** 逐片段的压缩下限（有配音的片段用配音真实长度） */
+  floors?: Record<ID, number> | null
 }
 
 /**
@@ -212,8 +229,8 @@ export interface BuildPadInput {
  *   3. 覆盖造成的差额，重新摊到「没被固定」的片段上，保证合计仍然等于 padTotal
  */
 export function buildPad(input: BuildPadInput): Record<ID, number> {
-  const { all, overrides, padTotal, settings } = input
-  const pad = distributePad(all, padTotal, settings)
+  const { all, overrides, padTotal, settings, floors } = input
+  const pad = distributePad(all, padTotal, settings, floors)
   if (!overrides || !Object.keys(overrides).length) return pad
 
   const frozen = new Set<ID>()
@@ -238,7 +255,12 @@ export function buildPad(input: BuildPadInput): Record<ID, number> {
     for (const b of targets) {
       if (remaining <= 0) break
       const cur = pad[b.id] ?? 0
-      if (step < 0 && beatFrames(b, settings) + cur <= minFramesOf(b, settings)) continue
+      if (
+        step < 0 &&
+        beatFrames(b, settings) + cur <= minFramesOf(b, settings, floors?.[b.id] ?? 0)
+      ) {
+        continue
+      }
       pad[b.id] = cur + step
       remaining--
       progressed = true
@@ -267,6 +289,42 @@ export function sumPaddedFrames(
   return beats.reduce((s, b) => s + paddedBeatFrames(b, settings, pad), 0)
 }
 
+export interface BeatWindow {
+  beat: Beat
+  /** 在传入序列里的下标（含自动片段） */
+  index: number
+  /** 段内起始帧：前面所有片段的「自身 + 副帧」之和 */
+  start: number
+  /** 本片段实际占用帧数（自身 + 副帧） */
+  frames: number
+  /** 段内最后一帧 */
+  end: number
+}
+
+/**
+ * 每个片段在**合并后的视频段**里占哪一段帧。
+ *
+ * 关键帧 / 音视频素材的位置都存在片段自己的坐标系里（"本拍第 20 帧"），
+ * 一旦几个片段拼成一段，位置就得换算成段内绝对帧位。换算必须走这里，
+ * 而不是各自 reduce 一遍 beatFrames：
+ *   · 副帧（pad）会改变每个片段的实际长度，后面所有片段的起点都要跟着挪；
+ *   · 预备镜头 / 尾帧切镜 / 黑屏是素材化时插进来的自动片段，它们也占帧。
+ * 少算任何一项，中间片段的关键帧就会落在错误的一帧上 —— 而且不会报错。
+ */
+export function beatWindowsOf(
+  beats: Beat[],
+  settings: ProjectSettings = DEFAULT_SETTINGS,
+  pad?: Record<ID, number> | null
+): BeatWindow[] {
+  let cursor = 0
+  return beats.map((beat, index) => {
+    const frames = paddedBeatFrames(beat, settings, pad)
+    const win: BeatWindow = { beat, index, start: cursor, frames, end: cursor + frames - 1 }
+    cursor += frames
+    return win
+  })
+}
+
 /** 第一个段默认不引用，其余默认引用 */
 export function defaultRefPrev(index: number): boolean {
   return index > 0
@@ -274,6 +332,17 @@ export function defaultRefPrev(index: number): boolean {
 
 export function resolveRefPrev(group: { refPrev?: boolean }, index: number): boolean {
   return group.refPrev ?? defaultRefPrev(index)
+}
+
+/**
+ * 帧长家族由**接缝**决定，而不是"只要不是第一段就引用"。
+ *
+ * 引用强度 0（转场）→ 5 + 17k；1（镜切）/ 2（顺接）→ 17k。
+ * 以前 defaultRefPrev 只看序号，换场段明明 continuityFromPrev=false（模型不
+ * 拿上段尾帧），帧长却按引用上段算 —— 两处口径打架，切在换场处最容易翻车。
+ */
+export function refPrevOfStrength(strength: GuideStrength): boolean {
+  return strength > 0
 }
 
 /** 人类可读的家族描述，用于校验提示 */

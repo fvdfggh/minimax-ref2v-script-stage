@@ -10,7 +10,9 @@ import type {
   AdviceGroupPatch,
   StageAdvice
 } from '@/core/llm/advice'
-import type { Beat, BeatKind, EntityKind, EntityType, ID } from '@/domain/types'
+import type { Beat, BeatKind, EntityKind, EntityType, ID, Lang } from '@/domain/types'
+import { ENTITY_TYPES, normalizeEntityType } from '@/domain/types'
+import { splitCostumeOf } from '@/domain/refSheet'
 
 /* ------------------------------------------------------------------ *
  * 意见补丁的应用与级联
@@ -36,14 +38,15 @@ const KINDS: BeatKind[] = [
   'insert'
 ]
 
-const TYPES: EntityType[] = ['character', 'scene', 'prop', 'ui', 'other']
+const TYPES: EntityType[] = [...ENTITY_TYPES]
 
 function asKind(v: string | undefined): BeatKind | undefined {
   return v && KINDS.includes(v as BeatKind) ? (v as BeatKind) : undefined
 }
 
 function asType(v: string | undefined): EntityType | undefined {
-  return v && TYPES.includes(v as EntityType) ? (v as EntityType) : undefined
+  if (!v) return undefined
+  return TYPES.includes(v as EntityType) ? (v as EntityType) : normalizeEntityType(v)
 }
 
 function asEntityKind(v: string | undefined): EntityKind | undefined {
@@ -91,18 +94,23 @@ export const useAdviceStore = defineStore('advice', () => {
           continue
         }
         // nameEn 等本地化词条不在 addEntity 的入参签名里，建完再补一次
+        const type = asType(p.type) ?? 'character'
+        // 同一套拆字段规则：模型把穿着写进 textDesc 时，落库前挪到 costumeDesc
+        const split = splitCostumeOf(type, p.textDesc, p.costumeDesc)
         const created = await registry.addEntity(pid, {
           name: p.name,
-          type: asType(p.type) ?? 'character',
+          type,
           kind: asEntityKind(p.kind) ?? 'non_speaking',
           voiceDesc: p.voiceDesc ?? null,
-          textDesc: p.textDesc ?? null
+          textDesc: split.textDesc || null,
+          costumeDesc: split.costumeDesc || null
         })
-        if (p.nameEn || p.voiceDescEn || p.textDescEn) {
+        if (p.nameEn || p.voiceDescEn || p.textDescEn || p.costumeDescEn) {
           await registry.updateEntity(created.id, {
             nameEn: p.nameEn ?? null,
             voiceDescEn: p.voiceDescEn ?? null,
-            textDescEn: p.textDescEn ?? null
+            textDescEn: p.textDescEn ?? null,
+            costumeDescEn: p.costumeDescEn ?? null
           })
         }
         out.inserted++
@@ -120,14 +128,36 @@ export const useAdviceStore = defineStore('advice', () => {
         continue
       }
 
+      /*
+       * 改长相时同样拆一次：模型给的 textDesc 里常带"穿着湿透的外套"。
+       * 实体原本就没填服装时，把剪下来的那句补进 costumeDesc —— 不然这段
+       * 描述会凭空消失，三视图反而没衣服可画。
+       */
+      let nextText = p.textDesc
+      let nextCostume = p.costumeDesc
+      if (p.textDesc !== undefined) {
+        const wantCostume = (p.costumeDesc ?? existing.costumeDesc ?? '') as string
+        const split = splitCostumeOf(
+          asType(p.type) ?? existing.type,
+          p.textDesc,
+          wantCostume
+        )
+        nextText = split.textDesc
+        if (p.costumeDesc === undefined && !String(existing.costumeDesc ?? '').trim()) {
+          nextCostume = split.costumeDesc || undefined
+        }
+      }
+
       await registry.updateEntity(existing.id, {
         ...(asType(p.type) ? { type: asType(p.type) } : {}),
         ...(asEntityKind(p.kind) ? { kind: asEntityKind(p.kind) } : {}),
         ...(p.voiceDesc !== undefined ? { voiceDesc: p.voiceDesc } : {}),
-        ...(p.textDesc !== undefined ? { textDesc: p.textDesc } : {}),
+        ...(nextText !== undefined ? { textDesc: nextText } : {}),
+        ...(nextCostume !== undefined ? { costumeDesc: nextCostume } : {}),
         ...(p.nameEn !== undefined ? { nameEn: p.nameEn } : {}),
         ...(p.voiceDescEn !== undefined ? { voiceDescEn: p.voiceDescEn } : {}),
-        ...(p.textDescEn !== undefined ? { textDescEn: p.textDescEn } : {})
+        ...(p.textDescEn !== undefined ? { textDescEn: p.textDescEn } : {}),
+        ...(p.costumeDescEn !== undefined ? { costumeDescEn: p.costumeDescEn } : {})
       })
       out.updated++
     }
@@ -338,7 +368,12 @@ export const useAdviceStore = defineStore('advice', () => {
 
   /* --------------------------- 段字段 --------------------------- */
 
-  async function applyFields(patches: AdviceFieldPatch[], groupIds: ID[], skipped: string[]) {
+  async function applyFields(
+    patches: AdviceFieldPatch[],
+    groupIds: ID[],
+    skipped: string[],
+    lang: Lang = 'zh'
+  ) {
     const out = { updated: 0 }
     const pid = project.currentId
     if (!pid || !patches.length) return out
@@ -349,8 +384,9 @@ export const useAdviceStore = defineStore('advice', () => {
         skipped.push(`修改段字段：段号 ${p.segment} 超出范围`)
         continue
       }
-      if (p.key === 'summary') await assembly.setSummary(pid, gid, p.value)
-      else await assembly.setField(pid, gid, p.key, p.value)
+      // ④ 的意见改中文工作稿，交付页的意见改英文终稿 —— 不能一律写中文侧
+      if (p.key === 'summary') await assembly.setSummary(pid, gid, p.value, lang)
+      else await assembly.setField(pid, gid, p.key, p.value, lang)
       out.updated++
     }
     return out
@@ -358,7 +394,11 @@ export const useAdviceStore = defineStore('advice', () => {
 
   /* --------------------------- 总入口 --------------------------- */
 
-  async function apply(advice: StageAdvice, groupIds: ID[]): Promise<AdviceApplyReport> {
+  async function apply(
+    advice: StageAdvice,
+    groupIds: ID[],
+    lang: Lang = 'zh'
+  ): Promise<AdviceApplyReport> {
     const skipped: string[] = []
     const pid = project.currentId
 
@@ -391,7 +431,7 @@ export const useAdviceStore = defineStore('advice', () => {
     }
     const fields = structureChanged
       ? { updated: 0 }
-      : await applyFields(advice.fields ?? [], groupIds, skipped)
+      : await applyFields(advice.fields ?? [], groupIds, skipped, lang)
 
     return { entities, beats: beatReport, groups, fields, renumbered, adopted, dropped, skipped }
   }

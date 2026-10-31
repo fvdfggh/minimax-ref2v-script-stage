@@ -33,6 +33,7 @@ export function newBeat(
     entities: patch.entities ?? [],
     speakerId: patch.speakerId,
     focusEntityId: patch.focusEntityId,
+    transitionIn: patch.transitionIn || undefined,
     direction: patch.direction,
     visualDesc: patch.visualDesc,
     estFrames: patch.estFrames,
@@ -353,7 +354,7 @@ export function normalizeBeat(beat: Beat): Beat {
   return next
 }
 
-/** 非场景主体（角色 / 道具 / 界面 / 其他），永远返回数组 */
+/** 非场景主体（角色 / 道具），永远返回数组 */
 export function entityIdsOf(beat: Beat): ID[] {
   return Array.isArray(beat.entities) ? beat.entities : []
 }

@@ -11,14 +11,18 @@
  *   - 项目/集是真实的项目目录（REST 读回、素材文件真在磁盘）；
  *   - 级联删除真删干净。
  *
- * 运行前提：先起后端  python server/app.py --port 8787
- *   若后端没起，本文件整体自动 skip，不污染 npm test（单元套件）。
- *   显式跑本文件：npx vitest run src/stores/series.integration.spec.ts
+ * ★ 数据隔离：本文件**自己起一个后端**，数据目录放系统临时目录、端口随机，
+ *   跑完连进程带目录一起收掉。
+ *   以前它打的是用户正在用的那个后端（127.0.0.1:8787 + 真实数据目录），
+ *   每跑一次就留四个壳（联合测试项目 / 第 01 集 / 第 02 集 / 级联删除验证），
+ *   跑多了项目列表直接爆掉 —— 真发生过：147 个项目里 145 个是这么来的。
+ *   起不来就 skip：宁可少测，也不往真实项目库里写东西。
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { createPinia, setActivePinia } from 'pinia'
 import { deleteSeriesDeep } from '@/db'
-import { backendAssetUrl, backendListAssetFiles, getBackendBase } from '@/core/backend'
+import { backendAssetUrl, backendListAssetFiles, getBackendBase, setBackendBase } from '@/core/backend'
+import { startIsolatedBackend } from '@/core/isolatedBackend'
 import { useSeriesStore } from './series'
 import { useRegistryStore } from './registry'
 
@@ -28,21 +32,10 @@ const PNG = new Uint8Array([
   0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77
 ])
 
-async function backendAlive(ms = 2500): Promise<boolean> {
-  try {
-    const ctrl = new AbortController()
-    const t = setTimeout(() => ctrl.abort(), ms)
-    const res = await fetch(`${getBackendBase()}/api/health`, { signal: ctrl.signal })
-    clearTimeout(t)
-    return res.ok
-  } catch {
-    return false
-  }
-}
-
-const alive = await backendAlive()
-// 后端没起 → 整个套件标记 skip，不影响默认 npm test
-const suite = alive ? describe : (describe.skip as typeof describe)
+// 起不来（没装 python）就 skip，绝不退回用户的 8787
+const iso = await startIsolatedBackend()
+if (iso) setBackendBase(iso.base)
+const suite = iso ? describe : (describe.skip as typeof describe)
 
 interface Fixture {
   seriesId: string
@@ -55,7 +48,7 @@ interface Fixture {
 
 let fx: Fixture
 
-suite('前后端联合：真实后端 (127.0.0.1:8787) 上的两级结构', () => {
+suite('前后端联合：临时数据目录上的两级结构', () => {
   beforeAll(async () => {
     setActivePinia(createPinia())
     const series = useSeriesStore()
@@ -205,4 +198,15 @@ suite('前后端联合：真实后端 (127.0.0.1:8787) 上的两级结构', () =
     expect(list.some((p) => p.id === s.id)).toBe(false)
     expect(list.some((p) => p.id === epId)).toBe(false)
   })
+})
+
+/**
+ * 收掉隔离后端。
+ *
+ * 顺序不能反：先杀进程让文件句柄松手，再删目录；否则 Windows 上
+ * 临时目录里的 sqlite/json 还被开着，rmSync 会 EPERM。
+ * 删不掉也不报错 —— 目录在系统临时区，重启会清，不值得让测试变红。
+ */
+afterAll(async () => {
+  await iso?.stop()
 })

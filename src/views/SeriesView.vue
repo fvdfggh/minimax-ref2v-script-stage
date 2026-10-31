@@ -1,33 +1,52 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { NButton, NCheckbox, NInput, NModal, NPopconfirm, NSpin, NTag, useMessage } from 'naive-ui'
+import { NButton, NInput, NPopconfirm, NSelect, NSpin, useMessage } from 'naive-ui'
 import { useSeriesStore } from '@/stores/series'
+import { useWorkflowStore } from '@/stores/workflow'
 import { useRegistryStore } from '@/stores/registry'
 import { useProviderStore } from '@/stores/provider'
-import { useImageStore } from '@/stores/images'
 import { useStorageStore } from '@/stores/storage'
 import { setStorageProject } from '@/db'
-import { ENTITY_TYPE_LABEL } from '@/domain/registry'
-import ImageGenModal from '@/components/ImageGenModal.vue'
 import ProviderDialog from '@/components/ProviderDialog.vue'
-import type { Entity, ID } from '@/domain/types'
+import SubjectManager from '@/components/SubjectManager.vue'
+import TopTabs from '@/components/TopTabs.vue'
+import { ENTITY_TYPES } from '@/domain/types'
+import { ENTITY_TYPE_LABEL } from '@/domain/registry'
+import type { ID } from '@/domain/types'
+import InfoTip from '@/components/common/InfoTip.vue'
 
 const route = useRoute()
 const router = useRouter()
 const message = useMessage()
 
 const series = useSeriesStore()
+const workflow = useWorkflowStore()
 const registry = useRegistryStore()
 const provider = useProviderStore()
-const images = useImageStore()
 const storage = useStorageStore()
 
 const backendReady = ref(false)
 const booted = ref(false)
 const showProvider = ref(false)
+/** 项目页两个视图：各集 / 统一的主体管理 */
+const view = ref<'episodes' | 'subjects'>('episodes')
 
 const seriesId = computed(() => String(route.params.id ?? ''))
+
+/**
+ * 集级模板选择。
+ * 空值 = 跟随控制台当前模板（多数情况下就是这个）；选具体模板 = 把这集钉在
+ * 某套参数上，之后在控制台改别的模板不会影响它。
+ */
+const templateOptions = computed(() => [
+  { label: '默认（跟随控制台）', value: '' },
+  ...workflow.templates.map((t) => ({ label: t.name, value: t.id }))
+])
+
+function onPickTemplate(episodeId: ID, value: string | number | null) {
+  void series.setEpisodeTemplate(episodeId, String(value ?? '') as ID | '')
+}
 
 async function boot() {
   await storage.init()
@@ -42,6 +61,7 @@ async function boot() {
   // 大主体 = 项目(系列)自身的实体表
   await registry.load(seriesId.value)
   await provider.load()
+  await workflow.load()
   booted.value = true
 }
 
@@ -82,63 +102,23 @@ function openEpisode(id: ID) {
   router.push(`/p/${id}`)
 }
 
-/* ------------------------------- 大主体 ------------------------------- */
+/* --------------------------- 项目主体（概览） --------------------------- */
 
-const globalEntities = computed(() => registry.entities)
-
-async function addGlobalSubject() {
-  await registry.addEntity(seriesId.value, { name: '新大主体' })
-}
-
-async function removeGlobal(id: ID) {
-  await registry.removeEntity(id)
-}
-
-function globalImageUrl(e: Entity): string | null {
-  const a = registry.subjectImageFor(e.id)
-  return a ? registry.assetUrl(a) : null
-}
-
-async function attachGlobalImage(e: Entity, blob: Blob) {
-  const prev = registry.subjectImageFor(e.id)
-  const asset = await registry.addGeneratedImage(seriesId.value, blob, {
-    label: e.name,
-    kind: 'subject',
-    refId: e.id
-  })
-  await registry.updateEntity(e.id, { pictureN: asset.pictureN })
-  if (prev && prev.id !== asset.id) await registry.removeAsset(prev.id)
-}
-
-const imgModal = ref<{ entity: Entity } | null>(null)
-function openImage(e: Entity) {
-  imgModal.value = { entity: e }
-}
-
-/* ------------------------------- 注入到集 ------------------------------- */
-
-const injectTarget = ref<{ entity: Entity; episodeIds: ID[] } | null>(null)
-function openInject(e: Entity) {
-  // 已注入的集先勾上
-  const all = series.episodes.map((ep) => ep.id)
-  injectTarget.value = { entity: e, episodeIds: [] }
-  void all
-}
-async function confirmInject() {
-  const t = injectTarget.value
-  if (!t || !t.episodeIds.length) {
-    message.warning('先选择要注入的集')
-    return
-  }
-  let imgMiss = 0
-  for (const eid of t.episodeIds) {
-    const res = await series.injectToEpisode(seriesId.value, t.entity.id, eid)
-    if (!res.imageCopied) imgMiss++
-  }
-  injectTarget.value = null
-  if (imgMiss) message.warning(`已注入 ${t.episodeIds.length} 集（${imgMiss} 集参考图未复制成功）`)
-  else message.success(`已把「${t.entity.name}」注入 ${t.episodeIds.length} 集`)
-}
+/**
+ * 项目主体 = 项目(series)自己的实体表，是跨集复用的母版。
+ * 详细维护在「主体管理」视图（SubjectManager scope=project）里做，
+ * 这里只提供一眼能看到的规模，避免项目页把它堆成第二份编辑界面。
+ */
+const subjectCount = computed(() => registry.entities.length)
+const subjectWithImage = computed(() => registry.entities.filter((e) => !!e.pictureN).length)
+const speakingCount = computed(() => registry.entities.filter((e) => e.kind === 'speaking').length)
+/** 三类各自的规模：角色 / 场景 / 道具 */
+const typeCounts = computed(() =>
+  ENTITY_TYPES.map((t) => ({
+    label: ENTITY_TYPE_LABEL[t],
+    n: registry.entities.filter((e) => e.type === t).length
+  }))
+)
 </script>
 
 <template>
@@ -159,10 +139,12 @@ async function confirmInject() {
         <n-input v-model:value="seriesName" placeholder="项目名称" :bordered="false" style="max-width: 320px; font-size: 16px" />
       </div>
       <div class="row" style="gap: 8px">
+        <TopTabs />
+        <span style="width: 1px; height: 18px; background: var(--line)" />
         <span
           class="tag-chip"
           :style="{
-            background: provider.ready ? 'var(--accent-soft)' : '#fdecec',
+            background: provider.ready ? 'var(--accent-soft)' : 'var(--err-soft)',
             color: provider.ready ? 'var(--accent)' : 'var(--err)'
           }"
         >
@@ -173,7 +155,7 @@ async function confirmInject() {
       </div>
     </header>
 
-    <main style="flex: 1; min-height: 0; overflow: auto">
+    <main style="flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden">
       <div
         v-if="!backendReady"
         style="height: 100%; display: flex; align-items: center; justify-content: center; padding: 24px"
@@ -198,128 +180,191 @@ async function confirmInject() {
         <div style="height: 100%" />
       </n-spin>
 
-      <div v-else style="max-width: 1120px; margin: 0 auto; padding: 22px 20px 64px">
-        <div style="display: grid; grid-template-columns: minmax(320px, 2fr) minmax(360px, 3fr); gap: 20px">
-          <!-- 各集 -->
-          <section class="panel" style="padding: 16px">
-            <div class="row-between" style="margin-bottom: 12px">
-              <div style="font-weight: 600; font-size: 15px">各集（{{ series.episodes.length }}）</div>
-              <span class="muted" style="font-size: 12px">每集是独立工作台，独立打包</span>
-            </div>
+      <template v-else>
+        <div class="series-switch">
+          <button class="ss-item" :class="{ on: view === 'episodes' }" @click="view = 'episodes'">
+            各集<span class="ss-n">{{ series.episodes.length }}</span>
+          </button>
+          <button class="ss-item" :class="{ on: view === 'subjects' }" @click="view = 'subjects'">
+            主体管理<span class="ss-n">{{ subjectCount }}</span>
+          </button>
+        </div>
 
-            <div v-if="!series.episodes.length" class="empty" style="margin-bottom: 10px">
-              还没有集，点右上角「＋ 新增一集」
-            </div>
-
-            <div class="stack" style="gap: 8px">
-              <div
-                v-for="(ep, i) in series.episodes"
-                :key="ep.id"
-                class="panel"
-                style="padding: 10px 12px; display: flex; align-items: center; gap: 10px"
-              >
-                <span class="mono muted" style="width: 22px; text-align: center; flex: none">{{ i + 1 }}</span>
-                <n-input
-                  size="small"
-                  :value="ep.name"
-                  style="flex: 1"
-                  @update:value="(v: string) => series.renameEpisode(ep.id, v)"
-                />
-                <n-button size="small" type="primary" ghost @click="openEpisode(ep.id)">打开</n-button>
-                <n-button size="tiny" quaternary :disabled="i === 0" @click="moveEpisode(ep.id, -1)">↑</n-button>
-                <n-button size="tiny" quaternary :disabled="i === series.episodes.length - 1" @click="moveEpisode(ep.id, 1)">↓</n-button>
-                <n-popconfirm @positive-click="removeEpisode(ep.id)">
-                  <template #trigger>
-                    <n-button size="tiny" quaternary type="error">删除</n-button>
+        <div v-if="view === 'episodes'" class="scroll-pane" style="flex: 1; min-height: 0">
+          <div style="max-width: 1120px; margin: 0 auto; padding: 16px 20px 48px">
+            <section class="panel subj-bar">
+              <div style="min-width: 0">
+                <div style="font-weight: 600; font-size: 14px">项目主体 {{ subjectCount }}</div>
+                <div class="muted" style="font-size: 12px; margin-top: 3px; line-height: 1.7">
+                  <template v-for="(t, i) in typeCounts" :key="t.label">
+                    <span v-if="i" class="muted"> · </span>{{ t.label }} {{ t.n }}
                   </template>
-                  删除该集及其所有片段？
-                </n-popconfirm>
+                  · 有参考图 {{ subjectWithImage }} · 会说话 {{ speakingCount }}
+                  <InfoTip
+                    size="sm"
+                    :width="280"
+                    text="项目主体是跨集母版，集里怎么改都不影响这里。"
+                  />
+                </div>
               </div>
-            </div>
-          </section>
+              <n-button size="small" type="primary" ghost @click="view = 'subjects'">
+                管理主体
+              </n-button>
+            </section>
 
-          <!-- 大主体 -->
-          <section class="panel" style="padding: 16px">
-            <div class="row-between" style="margin-bottom: 12px">
-              <div style="font-weight: 600; font-size: 15px">大主体 / 全局主体（{{ globalEntities.length }}）</div>
-              <n-button size="small" type="primary" ghost @click="addGlobalSubject">＋ 新增</n-button>
-            </div>
-            <div class="muted" style="font-size: 12px; margin-bottom: 12px; line-height: 1.7">
-              大主体挂在项目层，可「注入」到任意一集（复制进该集，独立编号/独立参考图，每集独立打包）。
-            </div>
+            <section class="panel ep-card">
+              <div class="ep-card-h">
+                <span class="ep-card-t">各集（{{ series.episodes.length }}）</span>
+                <span class="ep-card-s">每集独立打包</span>
+              </div>
 
-            <div v-if="!globalEntities.length" class="empty" style="margin-bottom: 10px">还没有大主体</div>
+              <div v-if="!series.episodes.length" class="empty">
+                还没有集，点右上角「＋ 新增一集」
+              </div>
 
-            <div class="stack" style="gap: 8px">
-              <div
-                v-for="e in globalEntities"
-                :key="e.id"
-                style="display: flex; align-items: center; gap: 10px; padding: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px"
-              >
-                <img
-                  v-if="globalImageUrl(e)"
-                  :src="globalImageUrl(e)!"
-                  style="width: 40px; height: 40px; border-radius: 6px; object-fit: cover; flex: none; background: #f1f3f6"
-                />
-                <div v-else style="width: 40px; height: 40px; border-radius: 6px; background: #f1f3f6; flex: none" />
-                <div style="flex: 1; min-width: 0">
-                  <n-input size="small" :value="e.name" @update:value="(v: string) => registry.updateEntity(e.id, { name: v })" />
-                  <div class="muted" style="font-size: 11.5px; margin-top: 4px">
-                    {{ ENTITY_TYPE_LABEL[e.type] }}<span v-if="e.kind === 'speaking'"> · 会说话</span>
+              <div v-else class="ep-list">
+                <div v-for="(ep, i) in series.episodes" :key="ep.id" class="ep-row">
+                  <span class="ep-idx mono">{{ i + 1 }}</span>
+                  <n-input
+                    size="small"
+                    :value="ep.name"
+                    @update:value="(v: string) => series.renameEpisode(ep.id, v)"
+                  />
+                  <n-select
+                    size="small"
+                    title="这一集使用哪套工作流模板"
+                    :value="ep.workflowTemplateId ?? ''"
+                    :options="templateOptions"
+                    @update:value="(v: string | number | null) => onPickTemplate(ep.id, v)"
+                  />
+                  <n-button size="small" type="primary" ghost @click="openEpisode(ep.id)">打开</n-button>
+                  <div class="ep-ops">
+                    <n-button size="tiny" quaternary :disabled="i === 0" title="上移" @click="moveEpisode(ep.id, -1)">↑</n-button>
+                    <n-button
+                      size="tiny"
+                      quaternary
+                      :disabled="i === series.episodes.length - 1"
+                      title="下移"
+                      @click="moveEpisode(ep.id, 1)"
+                    >
+                      ↓
+                    </n-button>
+                    <n-popconfirm @positive-click="removeEpisode(ep.id)">
+                      <template #trigger>
+                        <n-button size="tiny" quaternary type="error">删除</n-button>
+                      </template>
+                      删除该集及其所有片段？
+                    </n-popconfirm>
                   </div>
                 </div>
-                <n-button size="small" quaternary @click="openImage(e)">{{ globalImageUrl(e) ? '换图' : '生成图' }}</n-button>
-                <n-button size="small" @click="openInject(e)">注入到集</n-button>
-                <n-popconfirm @positive-click="removeGlobal(e.id)">
-                  <template #trigger>
-                    <n-button size="tiny" quaternary type="error">删除</n-button>
-                  </template>
-                  删除这个大主体？
-                </n-popconfirm>
               </div>
-            </div>
-          </section>
+            </section>
+          </div>
         </div>
-      </div>
-    </main>
 
-    <ImageGenModal
-      v-if="imgModal"
-      :show="true"
-      title="大主体参考图"
-      :default-prompt="imgModal ? images.subjectPrompt(imgModal.entity) : ''"
-      :base-image-url="imgModal ? globalImageUrl(imgModal.entity) : null"
-      default-size="1024x1024"
-      @done="(blob: Blob) => imgModal && attachGlobalImage(imgModal.entity, blob)"
-      @update:show="(v: boolean) => { if (!v) imgModal = null }"
-    />
-
-    <n-modal v-if="injectTarget" preset="card" title="注入到集" style="max-width: 420px">
-      <div class="muted" style="font-size: 12.5px; margin-bottom: 12px">
-        选择要把「{{ injectTarget.entity.name }}」复制到哪些集。每集会得到一份独立副本（独立编号 + 参考图）。
-      </div>
-      <div class="stack" style="gap: 8px">
-        <n-checkbox
-          v-for="ep in series.episodes"
-          :key="ep.id"
-          :checked="injectTarget.episodeIds.includes(ep.id)"
-          @update:checked="(v: boolean) =>
-            (injectTarget!.episodeIds = v
-              ? [...injectTarget!.episodeIds, ep.id]
-              : injectTarget!.episodeIds.filter((x) => x !== ep.id))"
-        >
-          {{ ep.name }}
-        </n-checkbox>
-        <div v-if="!series.episodes.length" class="muted" style="font-size: 12.5px">这个项目还没有集</div>
-      </div>
-      <template #footer>
-        <div class="row" style="justify-content: flex-end; gap: 8px">
-          <n-button @click="injectTarget = null">取消</n-button>
-          <n-button type="primary" @click="confirmInject">确认注入</n-button>
-        </div>
+        <SubjectManager v-else scope="project" :project-id="seriesId" />
       </template>
-    </n-modal>
+    </main>
 
     <ProviderDialog v-model:show="showProvider" />
   </div>
 </template>
+
+<style scoped>
+/*
+ * 「各集」：原来是 panel 里再套一层 panel（白卡套白卡，只剩两圈灰线），
+ * 现在是一张卡 + 头部灰带 + 行与行之间的细线，像一张表。
+ */
+.ep-card {
+  overflow: hidden;
+}
+.ep-card-h {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+.ep-card-t {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+}
+.ep-card-s {
+  font-size: var(--fs-md);
+  color: var(--muted);
+}
+.ep-list {
+  display: flex;
+  flex-direction: column;
+}
+.ep-row {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 168px auto auto;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  min-width: 0;
+}
+.ep-row + .ep-row {
+  border-top: 1px solid var(--line);
+}
+.ep-idx {
+  font-size: var(--fs-sm);
+  color: var(--muted-3);
+  text-align: center;
+}
+.ep-ops {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 页内子视图用 pill（一级导航才用下划线，见 TopTabs 的样式契约） */
+.series-switch {
+  display: flex;
+  gap: 4px;
+  flex: none;
+  padding: 9px 20px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+.ss-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+.ss-item:hover {
+  color: var(--text);
+  background: var(--panel-2);
+}
+.ss-item.on {
+  color: var(--accent);
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  font-weight: 500;
+}
+.ss-n {
+  font-size: 11px;
+  color: var(--muted);
+}
+.ss-item.on .ss-n {
+  color: var(--accent);
+}
+.subj-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+}
+</style>

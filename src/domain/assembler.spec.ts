@@ -146,10 +146,12 @@ describe('缝合局部优化 refineBySeam 收敛', () => {
     bigB.estFrames = 100
     const beats = [bigA, bigB]
 
-    const report = assemble(beats, defaultStrategy(S, 'fill_max'), { settings: S })
+    // 黑屏兜底是 legacy 才有的产物，这条不动点用 legacy 口径验
+    const L = { ...S, seamPolicy: 'legacy' as const }
+    const report = assemble(beats, defaultStrategy(L, 'fill_max'), { settings: L })
     expect(report.groups.length).toBe(2)
     // 前提：这个布局确实产生了黑屏兜底（非平凡前提，不是"0 黑屏平凡真"）
-    expect(measure(report.groups, beats, { settings: S }).black).toBe(1)
+    expect(measure(report.groups, beats, { settings: L }).black).toBe(1)
     // 结论：该黑屏容量锁死、无法修复，不动点成立
     expect(hasFixableBlackFallback(report.groups, beats)).toBe(false)
   })
@@ -179,5 +181,39 @@ describe('缝合局部优化 refineBySeam 收敛', () => {
     const a = assemble(beats, defaultStrategy(S, 'fill_max'), { settings: S })
     const b = assemble(beats, defaultStrategy(S, 'fill_max'), { settings: S })
     expect(a.groups.map((g) => g.beatIds)).toEqual(b.groups.map((g) => g.beatIds))
+  })
+})
+
+/* ---------------------- 接缝策略：引不引用上段 ---------------------- */
+
+describe('接缝策略决定帧长家族', () => {
+  // 每个 100 帧：两两合起来超过 141 上限，DP 只能各成一段
+  const big = (b: Beat): Beat => ({ ...b, estFrames: 100 })
+
+  it('guide：转场段不引用上段（5+17k），镜切段引用（17k）', () => {
+    const a = big(beat('a', 0, 's1', ['A']))
+    const b = big(beat('b', 1, 's1', ['B'])) // 同场换主体 -> 镜切
+    const c = big(beat('c', 2, 's2', ['A'])) // 换场 -> 转场
+
+    const report = assemble([a, b, c], defaultStrategy(S, 'fill_max'), { settings: S })
+
+    expect(report.groups.length).toBe(3)
+    expect(report.groups[0].refPrev).toBe(false)
+    expect(report.groups[1].refPrev).toBe(true)
+    expect(report.groups[2].refPrev).toBe(false)
+    expect(report.transitions).toBe(1)
+    // guide 下不存在黑屏兜底
+    expect(report.blackFallbacks).toBe(0)
+  })
+
+  it('legacy：除首段外一律引用，与接缝无关', () => {
+    const L = { ...S, seamPolicy: 'legacy' as const }
+    const a = big(beat('a', 0, 's1', ['A']))
+    const b = big(beat('b', 1, 's1', ['B']))
+    const c = big(beat('c', 2, 's2', ['A']))
+
+    const report = assemble([a, b, c], defaultStrategy(L, 'fill_max'), { settings: L })
+    expect(report.groups.length).toBe(3)
+    expect(report.groups.map((g) => g.refPrev)).toEqual([false, true, true])
   })
 })

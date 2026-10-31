@@ -1,21 +1,113 @@
+/* ================================================================== *
+ * 设计令牌 —— 全项目唯一的颜色/尺寸来源
+ *
+ * 规则：组件里不要再写十六进制色。要用色，就从下面挑一个语义名。
+ * 一个状态色都是三件套：--x(主) / --x-soft(浅底) / --x-line(浅边)
+ * / --x-ink(压在浅底上的深字)。这样 chip、提示条、卡片高亮用的是同一
+ * 套配色，不会出现"同样是红，五个组件五种红"。
+ *
+ * 模块色（--m-*）只用来区分"这是哪一块"（一采/二采/选卡、拆解/组合…），
+ * 不承载状态语义 —— 状态永远用 ok/warn/err。
+ * ================================================================== */
 :root {
-  --bg: #f6f7f9;
+  /* ---------- 中性：表面 4 档 + 线 3 档 + 字 5 档 ---------- */
+  /* 三级灰阶：页面 < 卡头 < 胶囊。之前三个值都在 #f2~#fa，肉眼分不出层次，
+     一页五张白卡叠在白底上就只剩"一堆线"。 */
+  --bg: #eef1f5;
   --panel: #ffffff;
-  --panel-2: #fbfbfd;
+  --panel-2: #f2f4f7; /* 卡头 / 侧栏 / 次表面 */
+  --panel-3: #e9edf3; /* 胶囊、标签、输入框底 */
+  /* 卡片内部的凹陷区（操作台）：比 panel-2 亮、比 panel 暗一档。
+     panel-2 压在 --bg 上几乎同色，卡里用它会看不出分界。 */
+  --panel-inset: #f5f7fb;
+  --hover: #e3e8f0; /* hover 底 */
   --line: #e5e7eb;
+  --line-soft: #eef1f5;
   --line-strong: #d3d7de;
   --text: #1f2430;
+  --text-2: #4b5565; /* 正文里的次级信息 */
+  --label: #5b6273; /* 字段标签 */
   --muted: #6b7280;
+  --muted-2: #8b93a1; /* 更弱的说明 */
+  --muted-3: #9aa3b2; /* 占位、禁用 */
+
+  /* ---------- 主色（品牌蓝） ---------- */
   --accent: #3b6ef5;
-  --accent-soft: #eaf0ff;
+  --accent-hover: #2f5cd6;
+  --accent-soft: #eef3ff;
+  --accent-line: #cfdcff;
+  --accent-ink: #2b56b8;
+
+  /* ---------- 状态：绿 / 黄 / 红 ---------- */
   --ok: #2f9e6f;
-  --warn: #c9820c;
+  --ok-soft: #e9f7ef;
+  --ok-line: #cfe6d9;
+  --ok-ink: #217a52;
+
+  --warn: #d89614;
+  --warn-soft: #fff8e6;
+  --warn-line: #f2e2c0;
+  --warn-ink: #8a6008;
+
   --err: #d64545;
+  --err-soft: #fdecec;
+  --err-line: #f4d3d3;
+  --err-ink: #a12d2d;
+
+  /* ---------- 模块色：分块识别，不表状态 ---------- */
+  --m-blue: var(--accent);
+  --m-blue-soft: var(--accent-soft);
+  --m-blue-line: var(--accent-line);
+  --m-blue-ink: var(--accent-ink);
+
+  --m-violet: #7a5cd0;
+  --m-violet-soft: #f5f2fd;
+  --m-violet-line: #e3daf8;
+  --m-violet-ink: #4f3796;
+
+  --m-teal: #1c8f74;
+  --m-teal-soft: #eef8f4;
+  --m-teal-line: #cbe8de;
+  --m-teal-ink: #116b56;
+
+  --m-amber: #c9820c;
+  --m-amber-soft: #fdf7ec;
+  --m-amber-line: #f0e2c4;
+  --m-amber-ink: #7a5a10;
+
+  --m-slate: #64748b;
+  --m-slate-soft: #f4f6f9;
+  --m-slate-line: #dfe4ec;
+  --m-slate-ink: #3d4757;
+
+  /* ---------- 圆角 / 阴影 ---------- */
+  --r-xs: 4px;
+  --r-sm: 6px;
+  --r-md: 8px;
+  --r-lg: 10px;
+  --r-xl: 12px;
+  --r-pill: 999px;
+  --radius: var(--r-lg);
+  --shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-2: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 12px rgba(16, 24, 40, 0.05);
+  --shadow-3: 0 8px 28px rgba(16, 24, 40, 0.12);
+  --shadow: var(--shadow-2);
+
+  /* ---------- 字号 / 间距 ---------- */
+  --fs-xs: 11px;
+  --fs-sm: 11.5px;
+  --fs-md: 12px;
+  --fs-base: 12.5px;
+  --fs-lg: 13.5px;
+  --fs-xl: 15px;
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 10px;
+  --sp-5: 12px;
+  --sp-6: 16px;
+
   --mono: 'JetBrains Mono', 'Cascadia Code', Consolas, 'Courier New', monospace;
-  --radius: 10px;
-  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 4px 12px rgba(16, 24, 40, 0.05);
-  /* 分镜卡片网格的固定行高，调整这里即可整体变高变矮 */
-  --beat-row-height: 200px;
 }
 
 * {
@@ -77,14 +169,86 @@ body {
   box-shadow: var(--shadow);
 }
 
+/* ------------------------------------------------------------------ *
+ * 阶段色：每个流水线阶段一个主色，只表"这是哪一步"，不表状态。
+ *
+ * 作用点有三处：面板头左侧的 3px 色条、片段卡片左边的竖线、选中 tab 的字色。
+ * 这样 8 个阶段页各有一个稳定的身份色，但卡片的形状/内距完全是同一套 ——
+ * 既有区分，又不会变成八个软件。
+ * ------------------------------------------------------------------ */
+[data-stage='subjects'],
+[data-stage='materials'] {
+  --stage: var(--m-slate);
+  --stage-soft: var(--m-slate-soft);
+  --stage-ink: var(--m-slate-ink);
+}
+[data-stage='split'],
+[data-stage='deliver'] {
+  --stage: var(--m-blue);
+  --stage-soft: var(--m-blue-soft);
+  --stage-ink: var(--m-blue-ink);
+}
+[data-stage='enrich'],
+[data-stage='localize'] {
+  --stage: var(--m-violet);
+  --stage-soft: var(--m-violet-soft);
+  --stage-ink: var(--m-violet-ink);
+}
+[data-stage='assemble'] {
+  --stage: var(--m-teal);
+  --stage-soft: var(--m-teal-soft);
+  --stage-ink: var(--m-teal-ink);
+}
+[data-stage='complete'] {
+  --stage: var(--m-amber);
+  --stage-soft: var(--m-amber-soft);
+  --stage-ink: var(--m-amber-ink);
+}
+
+/*
+ * 面板头：全项目 15 处 .panel-head 共用这一份。
+ * 底色用 --panel-2 而不是纯白 —— 卡片和卡片头之间必须有视觉分层，
+ * 否则一整页 5 张白卡叠白底，看上去就是"一片白 + 一堆线"。
+ */
 .panel-head {
+  position: relative;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /*
+   * 允许折行：头部右边是「并发 + 两个按钮」，窗口窄一点就顶出去了，
+   * 父级又是 overflow: hidden —— 按钮会整块消失，看着像没有这个功能。
+   * 折行只是变高，至少点得到。
+   */
+  flex-wrap: wrap;
+  row-gap: 8px;
   gap: 12px;
-  padding: 10px 14px;
+  min-width: 0;
+  padding: 8px 12px;
+  background: var(--panel-2);
   border-bottom: 1px solid var(--line);
+  font-size: var(--fs-base);
   font-weight: 600;
+  color: var(--text);
+}
+/* 阶段色条：贴在卡片左边缘，只占卡片头那一截（圆角跟着卡片走） */
+.panel-head::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--stage, var(--accent));
+  border-radius: var(--r-lg) 0 0 0;
+  opacity: 0.9;
+}
+/* 面板头里的副标题：标题后面那句灰字 */
+.panel-sub {
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  min-width: 0;
 }
 
 .panel-body {
@@ -110,13 +274,14 @@ body {
   gap: 12px;
 }
 
+/* .tag-chip 是历史名字，和 .chip 现在是同一套度量，不要各写一份 */
 .tag-chip {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  font-size: 12px;
+  gap: 3px;
+  padding: 0 7px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-md);
   line-height: 18px;
   border: 1px solid transparent;
   white-space: nowrap;
@@ -133,7 +298,7 @@ body {
   position: relative;
   background: var(--panel);
   border: 1px solid var(--line);
-  border-left: 3px solid var(--accent);
+  border-left: 3px solid var(--stage, var(--accent));
   border-radius: 8px;
   padding: 8px 10px;
   transition: box-shadow 0.15s, border-color 0.15s, transform 0.12s;
@@ -168,7 +333,7 @@ body {
 
 .beat-card.is-invalid {
   border-left-color: var(--err);
-  background: #fff8f8;
+  background: var(--err-soft);
 }
 
 .lane {
@@ -183,29 +348,57 @@ body {
   flex: 0 0 168px;
 }
 
+/*
+ * 段块（组合页的 seg 容器）：原来是虚线框 + 灰底，读起来像"占位符"。
+ * 现在是实线卡片 + 浅灰卡头，和交付页的模块卡是同一套语言。
+ * 卡头靠 :first-child 命中那行 seg 标题，不用改模板结构。
+ */
 .group-box {
-  border: 1px dashed var(--line-strong);
-  border-radius: 10px;
   padding: 8px 10px 10px;
-  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
 }
+/* 卡头用负 margin 顶到卡片边缘：容器保留内距，身体内容才不会贴着边框 */
+.group-box > .row-between:first-child {
+  margin: -8px -10px 8px;
+  padding: 6px 10px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+  box-shadow: inset 3px 0 0 var(--stage, var(--accent));
+}
+/* 段头里的胶囊比正文里的再小一号，一行能放下五六个而不炸开 */
+.group-box > .row-between:first-child .tag-chip {
+  font-size: var(--fs-xs);
+  line-height: 17px;
+}
+.group-box > .row-between:first-child .seg-state {
+  font-weight: 600;
+}
+
 
 .group-box.is-over {
   border-color: var(--err);
-  background: #fff6f6;
+  background: var(--err-soft);
 }
 
+/* 段长占比：原来 6px 纯蓝横条，贴在卡头下面像一条 tab 下划线。
+   收到 4px，填充用阶段色（不抢状态色），整体不再是页面最亮的东西。 */
 .frame-bar {
-  height: 6px;
-  border-radius: 3px;
-  background: #eceff4;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--panel-3);
   overflow: hidden;
 }
 
 .frame-bar > i {
   display: block;
   height: 100%;
-  background: var(--accent);
+  border-radius: 2px;
+  background: var(--stage, var(--accent));
+  opacity: 0.7;
 }
 
 .frame-bar.is-warn > i {
@@ -227,21 +420,21 @@ body {
 }
 
 .issue.error {
-  background: #fff3f3;
-  border-color: #f6d5d5;
-  color: #a12d2d;
+  background: var(--err-soft);
+  border-color: var(--err-line);
+  color: var(--err-ink);
 }
 
 .issue.warn {
-  background: #fff9ec;
-  border-color: #f2e2c0;
-  color: #8a6008;
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn-ink);
 }
 
 .issue.info {
-  background: #f1f6ff;
-  border-color: #d9e5ff;
-  color: #2b56b8;
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
 }
 
 .field-card {
@@ -303,40 +496,250 @@ body {
 }
 
 .seam-card.is-black {
-  border-color: #f0d3a8;
-  background: #fffdf7;
+  border-color: var(--warn-line);
+  background: var(--warn-soft);
 }
 
 .seam-card.is-cut {
-  border-color: #cddffb;
-  background: #f8fbff;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
 }
 
 .stage-tabs {
   display: flex;
-  gap: 6px;
+  /*
+   * 可以折行，不许裁掉。
+   *
+   * 早先是 `overflow-x: auto` + 隐藏滚动条：窗口窄一点，④⑤⑥ 就被推到
+   * 看不见的地方，还没有任何"后面还有内容"的线索 —— 用户以为阶段只有三个。
+   * 折成两行难看一点，但每一页都点得到。
+   */
+  flex-wrap: wrap;
+  gap: 5px;
   padding: 4px;
-  background: #eceef3;
+  background: var(--panel-3);
   border-radius: 10px;
+  min-width: 0;
 }
 
 .stage-tab {
-  padding: 6px 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 11px;
   border-radius: 7px;
   cursor: pointer;
   font-weight: 500;
   color: var(--muted);
-  border: none;
+  border: 1px solid transparent;
   background: transparent;
-  font-size: 13.5px;
+  font-size: 13px;
   font-family: inherit;
+  white-space: nowrap;
+  flex: 0 0 auto;
+  line-height: 20px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+
+.stage-tab:hover:not(.active) {
+  background: var(--hover);
+  color: var(--text);
 }
 
 .stage-tab.active {
   background: var(--panel);
-  color: var(--text);
+  color: var(--stage-ink, var(--text));
   box-shadow: var(--shadow);
 }
+
+/* ------------------------------------------------------------------ *
+ * 阶段门禁：顺序执行
+ *
+ * 被上游锁住的 tab 仍然可点 —— 点了会把原因一条条摆出来。禁用点击等于
+ * "点了没反应"，比明确的拦截更让人困惑。
+ *
+ * 四种状态各有一套「颜色 + 图标 + 底色」，不靠单一灰点区分：
+ *   t-ok     ✓ 绿字        这一关过了
+ *   t-warn   · 琥珀色小点  能过但有提醒
+ *   t-error  ! 红底白字    这一关自己没过 —— 要修的就是它
+ *   t-lock   · 灰点+灰字   上游没过，进不去
+ * ------------------------------------------------------------------ */
+.stage-tab-label {
+  flex: 0 0 auto;
+}
+
+.stage-tab-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  font-size: 9.5px;
+  font-weight: 700;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+/* 「先」= 流程起点（主体拆分）。和 ✓ / ! 占同一个位置，读起来是"这一颗先点" */
+.stage-tab-pre {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  height: 13px;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: 9.5px;
+  font-weight: 600;
+  line-height: 1;
+  flex: 0 0 auto;
+}
+
+.stage-tab.t-ok {
+  /* 通过的阶段保持中性色：一排全绿反而看不出哪里不对劲，
+     绿色只留在那个 ✓ 上，说明「这关没事」就够了。 */
+  color: var(--muted);
+}
+
+.stage-tab.t-ok .stage-tab-mark {
+  color: var(--ok);
+  background: var(--ok-soft);
+}
+
+.stage-tab.t-warn {
+  color: var(--label);
+}
+
+.stage-tab.t-warn .stage-tab-mark {
+  width: 6px;
+  height: 6px;
+  margin: 0 3px;
+  background: var(--warn);
+}
+
+.stage-tab.t-error {
+  color: var(--err-ink);
+  background: var(--err-soft);
+  border-color: var(--err-line);
+}
+
+.stage-tab.t-error .stage-tab-mark {
+  background: var(--err);
+  color: #fff;
+}
+
+.stage-tab.t-error.active {
+  color: var(--err-ink);
+  border-color: var(--err);
+}
+
+.stage-tab.t-lock {
+  color: var(--muted-3);
+}
+
+.stage-tab.t-lock .stage-tab-mark {
+  width: 6px;
+  height: 6px;
+  margin: 0 3px;
+  background: var(--line-strong);
+}
+
+/* 「去哪修」：header 上唯一一条可点的结论 */
+.stage-alert {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: 2px;
+  padding: 3px 10px;
+  border: 1px solid var(--err-line);
+  border-radius: 999px;
+  background: var(--err-soft);
+  color: var(--err-ink);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.stage-alert b {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--err);
+  color: #fff;
+  font-size: 9.5px;
+  line-height: 1;
+}
+
+.stage-alert:hover {
+  border-color: var(--err);
+  background: #fbdcdc;
+}
+
+/* 当前阶段的问题条：贴在 header 下面，不进滚动区 */
+.gate-bar {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 7px 18px;
+  font-size: 12.5px;
+  line-height: 1.65;
+  border-bottom: 1px solid var(--line);
+  flex: 0 0 auto;
+}
+.gate-bar-error {
+  background: var(--err-soft);
+  color: var(--err-ink);
+}
+.gate-bar-warn {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+/* 数据在别处被改过：不是错误，是"已经替你刷新了" —— 所以用信息色，不用红黄 */
+.gate-bar-info {
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.gate-bar-tag {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.gate-bar-text {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+.gate-bar-note {
+  opacity: 0.72;
+  white-space: nowrap;
+}
+
+/* 提示条/说明文字里的"按钮"：看起来是链接，语义是按钮 */
+.link-btn {
+  margin: 0;
+  padding: 0 2px;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  opacity: 0.78;
+  flex: 0 0 auto;
+}
+.link-btn:hover {
+  opacity: 1;
+}
+
+/* 「主体登记」已经并进流程（tab 上标「先」），不再用竖线和 ①~⑤ 隔开 */
 
 /*
  * 滚动面板。
@@ -369,142 +772,15 @@ body {
 /* ---------------------- 片段卡片网格 ---------------------- */
 
 /*
- * 一行四列方形卡片。
- * grid-auto-rows 固定行高 —— 容器高度 = 行数 × (行高 + 间距)，完全可预测，
- * 卡片内容再多也不会把容器撑高，拖拽和滚动时不会出现高度跳动。
+ * 片段卡片（拆解页）不再是固定行高的方格：字段直接铺在卡片上，
+ * 高度随内容走，所以网格只负责分列、行高交给卡片自己。
+ * 列数按容器宽度自动铺（每列至少 430），窗口宽了不会变成一行一个长条。
  */
-.beat-grid {
+.sp-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  grid-auto-rows: var(--beat-row-height, 200px);
+  grid-template-columns: repeat(auto-fill, minmax(min(410px, 100%), 1fr));
+  align-items: start;
   gap: 10px;
-  align-content: start;
-}
-
-.beat-square {
-  height: 100%;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 8px 10px;
-  overflow: hidden;
-  cursor: default;
-}
-
-.beat-square.is-selected {
-  border-color: var(--accent);
-  background: #f7f9ff;
-}
-
-.sq-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: 0 0 auto;
-}
-
-.beat-index {
-  color: var(--muted);
-  font-size: 11.5px;
-  min-width: 16px;
-  text-align: right;
-}
-
-.sq-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: hidden;
-  cursor: pointer;
-}
-
-.sq-title {
-  font-weight: 500;
-  font-size: 13px;
-  line-height: 1.4;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.sq-dialogue {
-  margin-top: 3px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--ok);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.sq-sub {
-  margin-top: 3px;
-  font-size: 11.5px;
-  line-height: 1.45;
-  color: var(--muted);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  word-break: break-word;
-}
-
-.sq-note {
-  margin-top: 3px;
-  font-size: 11.5px;
-  color: var(--warn);
-  display: -webkit-box;
-  -webkit-line-clamp: 1;
-  line-clamp: 1;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.sq-entities {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  flex: 0 0 auto;
-  max-height: 40px;
-  overflow: hidden;
-  align-content: flex-start;
-}
-
-.sq-foot {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  flex: 0 0 auto;
-  padding-top: 6px;
-  border-top: 1px solid var(--line);
-}
-
-/* 网格里插入位置用左右竖线表示，比横线更直观 */
-.beat-square.drop-before::before,
-.beat-square.drop-after::after {
-  left: auto;
-  right: auto;
-  top: 0;
-  bottom: 0;
-  height: auto;
-  width: 2px;
-}
-
-.beat-square.drop-before::before {
-  left: -6px;
-}
-
-.beat-square.drop-after::after {
-  right: -6px;
-  bottom: 0;
 }
 
 /* ---------------------- "同一镜头被迫拆开" 承接标记 ---------------------- */
@@ -534,9 +810,9 @@ body {
   line-height: 18px;
   padding: 0 9px;
   border-radius: 999px;
-  background: #fff9ec;
-  border: 1px solid #f2e2c0;
-  color: #8a6008;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn-ink);
 }
 
 /* ---------------------- 片段编辑弹窗 ---------------------- */
@@ -561,25 +837,391 @@ body {
   gap: 10px;
 }
 
-@media (max-width: 1600px) {
-  .beat-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 1200px) {
-  .beat-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .beat-editor-grid,
   .beat-editor-grid-3 {
     grid-template-columns: minmax(0, 1fr);
   }
 }
 
-@media (max-width: 820px) {
-  .beat-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
+/* ================================================================== *
+ * 工作台公用外壳（控制台 / 运行页共用）
+ *
+ * 这两页以前各写一份 .console-head / .rv-head，宽度、内距、字重各不相同，
+ * 观感上像两个软件。统一到这里，改一处两页一起变。
+ * ================================================================== */
+
+.page-head {
+  height: 54px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 16px 0 18px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.page-head-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  min-width: 0;
+}
+.page-brand {
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+.page-head-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+/* 连接状态灯：一个点 + 一句话，替代原来占一整个面板的连接卡片 */
+.status-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+}
+.status-dot::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line-strong);
+  flex: 0 0 auto;
+}
+.status-dot.ok {
+  color: var(--ok);
+  border-color: var(--ok-line);
+  background: var(--ok-soft);
+}
+.status-dot.ok::before {
+  background: var(--ok);
+}
+.status-dot.bad {
+  color: var(--err);
+  border-color: var(--err-line);
+  background: var(--err-soft);
+}
+.status-dot.bad::before {
+  background: var(--err);
+}
+
+/* ------------------------------------------------------------------ *
+ * 左栏列表（模板 / 运行配置）
+ *
+ * 这三个页面里最刺眼的问题是"一列同名条目"。条目本身长什么样由页面决定，
+ * 但副行的存在是硬要求：没有副行，用户没法在 6 个同名项之间做选择。
+ * ------------------------------------------------------------------ */
+.side-col {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.side-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 6px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.side-search {
+  flex: 0 0 auto;
+  padding: 0 10px 8px;
+}
+.side-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+.side-item {
+  padding: 7px 10px;
+  border-radius: 8px;
+  cursor: pointer;
+  border: 1px solid transparent;
+  margin-bottom: 3px;
+}
+.side-item:hover {
+  background: var(--hover);
+}
+.side-item.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+}
+.side-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text);
+}
+.side-name > span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.side-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+}
+.side-meta .dot-sep::before {
+  content: '·';
+  margin-right: 6px;
+}
+.side-empty {
+  padding: 18px 10px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------------------ *
+ * 折叠分区（"高级参数"用）
+ * ------------------------------------------------------------------ */
+.fold-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 14px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 13px;
+  font-weight: 500;
+}
+.fold-head:hover {
+  background: var(--panel-2);
+}
+.fold-caret {
+  font-size: 11px;
+  color: var(--muted);
+  transition: transform 0.14s;
+  display: inline-block;
+}
+.fold-caret.open {
+  transform: rotate(90deg);
+}
+.fold-summary {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* 重名提示条：存量数据改不动，但至少要让人一眼看见并一键处理 */
+.dup-tip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin: 0 10px 8px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  font-size: 11.5px;
+  color: var(--warn);
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+}
+
+/* ================================================================== *
+ * 通用原语
+ *
+ * 这三组类是全项目共用的"积木"：卡片（.card）、状态小标签（.chip）、
+ * 字段网格（.fieldset / .field / .note）。新组件请直接用它们，
+ * 不要再自己写 border + border-radius + background 三件套 ——
+ * 之前 47 个组件各写一遍，圆角 6/8/10 混用、底色五种灰。
+ * ================================================================== */
+
+/* ---------- 卡片 ---------- */
+.card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-1);
+  overflow: hidden;
+  min-width: 0;
+}
+.card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  min-width: 0;
+  padding: 8px 12px;
+  background: var(--panel-2);
+  border-bottom: 1px solid var(--line);
+}
+.card-title {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.card-sub {
+  min-width: 0;
+  font-size: var(--fs-xs);
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 卡头右侧的动作区：永远贴右，不要用 margin-left:auto 在别处乱写 */
+.card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+.card-body {
+  padding: 10px 12px;
+  min-width: 0;
+}
+.card-foot {
+  padding: 8px 12px;
+  border-top: 1px solid var(--line);
+  background: var(--panel-2);
+  font-size: var(--fs-xs);
+  color: var(--muted);
+}
+
+/* ---------- 状态小标签 ---------- */
+/* 用 .chip.ok 而不是 inline style="background:var(--ok-soft);color:var(--ok-ink)" */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 0 7px;
+  border: 1px solid transparent;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-md);
+  line-height: 18px;
+  white-space: nowrap;
+}
+.chip.mute,
+.tag-chip.mute {
+  background: var(--panel-3);
+  color: var(--label);
+}
+.chip.info,
+.tag-chip.info {
+  background: var(--accent-soft);
+  border-color: var(--accent-line);
+  color: var(--accent-ink);
+}
+.chip.ok,
+.tag-chip.ok {
+  background: var(--ok-soft);
+  border-color: var(--ok-line);
+  color: var(--ok-ink);
+}
+.chip.warn,
+.tag-chip.warn {
+  background: var(--warn-soft);
+  border-color: var(--warn-line);
+  color: var(--warn-ink);
+}
+.chip.err,
+.tag-chip.err {
+  background: var(--err-soft);
+  border-color: var(--err-line);
+  color: var(--err-ink);
+}
+
+/* ---------- 分段 / 字段 / 说明 ---------- */
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.fieldset + .fieldset {
+  border-top: 1px dashed var(--line);
+  padding-top: var(--sp-3);
+}
+.fieldset-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: var(--label);
+}
+.fieldset-head::before {
+  content: '';
+  width: 14px;
+  height: 3px;
+  border-radius: 2px;
+  background: var(--accent);
+  opacity: 0.8;
+}
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px 10px;
+}
+.field {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: var(--sp-3);
+  align-items: center;
+  min-width: 0;
+  font-size: var(--fs-base);
+}
+.field > span {
+  color: var(--label);
+  font-size: var(--fs-sm);
+  line-height: 1.25;
+}
+.field-wide {
+  grid-column: 1 / -1;
+}
+.note {
+  margin: 0;
+  padding-left: var(--sp-3);
+  border-left: 2px solid var(--line);
+  font-size: 10.8px;
+  line-height: 1.6;
+  color: var(--muted);
+}
+
+/* ---------- 小节标题（面板内部的一级分隔） ---------- */
+.section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  padding: 2px 0 6px;
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--text);
+}
+.section-head .section-sub {
+  font-weight: 400;
+  font-size: var(--fs-xs);
+  color: var(--muted);
 }

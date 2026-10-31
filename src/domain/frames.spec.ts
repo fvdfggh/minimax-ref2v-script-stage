@@ -62,6 +62,17 @@ describe('帧长度家族', () => {
     expect(alignedOptions(false, 141)).toEqual([5, 22, 39, 56, 73, 90, 107, 124, 141])
     expect(alignedOptions(true, 141)).toEqual([17, 34, 51, 68, 85, 102, 119, 136])
   })
+
+  it('★ 最长段可调：降到 90 后引用上段只到 85，原本合法的段变成超限', () => {
+    expect(maxAlignedFrames(false, 90)).toBe(90)
+    expect(maxAlignedFrames(true, 90)).toBe(85)
+    // 124 = 5 + 17×7，在 141 下合法
+    expect(fitSegmentFrames(124, false, 141).overLimit).toBe(false)
+    const at90 = fitSegmentFrames(124, false, 90)
+    expect(at90.target).toBe(124)
+    expect(at90.cap).toBe(90)
+    expect(at90.overLimit).toBe(true)
+  })
 })
 
 describe('最近取整', () => {
@@ -289,5 +300,48 @@ describe('引用上段默认值', () => {
     expect(resolveRefPrev({}, 3)).toBe(true)
     expect(resolveRefPrev({ refPrev: true }, 0)).toBe(true)
     expect(resolveRefPrev({ refPrev: false }, 3)).toBe(false)
+  })
+})
+
+describe('配音决定压缩下限', () => {
+  it('有配音时下限用配音帧数，而不是字数估算', () => {
+    const b = beat({ title: '台词', kind: 'dialogue', dialogue: '嗯'.repeat(10) })
+    // 10 个字按 5 字/秒 → 48 帧；配音实测 79 帧才是真的下限
+    expect(minFramesOf(b, S)).toBe(48)
+    expect(minFramesOf(b, S, 79)).toBe(79)
+  })
+
+  it('压缩时不会把有配音的片段压到音频以下', () => {
+    const talk = beat({
+      title: '台词',
+      kind: 'dialogue',
+      dialogue: '嗯'.repeat(10),
+      estFrames: 79,
+      manualFrames: true
+    })
+    const action = beat({ title: '动作', kind: 'action', estFrames: 100, manualFrames: true })
+    const pad = distributePad([talk, action], -40, S, { [talk.id]: 79 })
+    // 台词已经等于音频长度，一帧都不能再压；缺口全由动作片段承担
+    expect(pad[talk.id]).toBe(0)
+    expect(pad[action.id]).toBe(-40)
+  })
+
+  it('buildPad 会把 floors 一路传下去', () => {
+    const talk = beat({
+      title: '台词',
+      kind: 'dialogue',
+      dialogue: '嗯'.repeat(10),
+      estFrames: 79,
+      manualFrames: true
+    })
+    const action = beat({ title: '动作', kind: 'action', estFrames: 100, manualFrames: true })
+    const pad = buildPad({
+      all: [talk, action],
+      padTotal: -30,
+      settings: S,
+      floors: { [talk.id]: 79 }
+    })
+    expect(pad[talk.id]).toBe(0)
+    expect(padTotalOf(pad)).toBe(-30)
   })
 })

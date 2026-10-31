@@ -10,7 +10,19 @@ import {
   buildStage2Messages
 } from '@/core/llm/prompts'
 import { buildAdviceMessages } from '@/core/llm/advice'
+import {
+  buildBeatSplitMessages,
+  buildBeatWriteMessages,
+  buildEntityWriteMessages
+} from '@/core/llm/assist'
+import type {
+  BeatSplitInput,
+  BeatSplitPart,
+  BeatWriteInput,
+  EntityWriteInput
+} from '@/core/llm/assist'
 import { chunkBy, splitStory } from '@/domain/chunk'
+import { splitCostumeOf } from '@/domain/refSheet'
 import { useProviderStore } from './provider'
 import { useRegistryStore } from './registry'
 import type {
@@ -22,10 +34,12 @@ import type {
   StageAdvice
 } from '@/core/llm/advice'
 import type { EntityKind, EntityType } from '@/domain/types'
+import { ENTITY_TYPES as ENTITY_TYPES_LIST, normalizeEntityType } from '@/domain/types'
 import type {
   Beat,
   Entity,
   FieldSchema,
+  ID,
   ProjectSettings,
   SeamAnalysis
 } from '@/domain/types'
@@ -35,6 +49,8 @@ import type {
   GlossaryBeatPatch,
   GlossaryEntityPatch,
   LocalizeFieldsInput,
+  LocalizeDirection,
+  ProjectSubjectBrief,
   SegmentFillInput,
   Stage1Beat,
   Stage1NewEntity,
@@ -61,14 +77,19 @@ export interface SegmentFillTask {
   index: number
 }
 
-/** 阶段五的单段本地化任务 */
+/** 阶段四的单段本地化任务 */
 export interface SegmentLocalizeTask {
   id: string
   schema: FieldSchema[]
   beats: Beat[]
   entities: Entity[]
-  /** 中文原稿（含派生字段，作为只读上下文） */
+  /** 源稿（含派生字段，作为只读上下文） */
   fields: Record<string, string>
+  /**
+   * 翻译方向。缺省 zh2en（本地化的常规方向）；
+   * 同步页在"英文改过、中文落后"时传 en2zh。
+   */
+  direction?: LocalizeDirection
   index: number
   total: number
   frames: number
@@ -87,8 +108,16 @@ export interface Stage1Result {
 
 export interface EntityProposal extends Stage1NewEntity {
   accepted: boolean
-  /** 已存在于注册表，不可重复创建 */
+  /** 已存在于本集注册表，不可重复创建 */
   exists: boolean
+  /**
+   * 外部项目（系列）母版里已有同名主体：
+   * 确认后从项目取用到本集（带 sourceId 溯源），而不是在本集新建一份。
+   * 这是跨集「不重复定义」的关键 —— 名字 / 类型 / 设定都以母版为准。
+   */
+  inProject: boolean
+  /** 命中的项目层母版实体 id（inProject 时给出） */
+  projectEntityId?: ID
   /** 本批片段里实际被引用了几次 */
   refCount: number
 }
@@ -107,7 +136,7 @@ async function retryOnce<T>(fn: () => Promise<T>): Promise<T> {
 
 const BEAT_OPS = new Set(['update', 'insert', 'delete'])
 const GROUP_OPS = new Set(['split', 'merge', 'refPrev'])
-const ENTITY_TYPES = new Set(['character', 'scene', 'prop', 'ui', 'other'])
+const ENTITY_TYPES = new Set<string>(ENTITY_TYPES_LIST)
 
 function str(v: unknown): string | undefined {
   const s = v == null ? '' : String(v).trim()
@@ -131,6 +160,54 @@ function num(v: unknown): number | undefined {
   const n = Number(v)
   return Number.isFinite(n) ? Math.round(n) : undefined
 }
+
+/**
+ * 单字段助手返回的正文：模型偶尔会自带"镜头描述："前缀、引号或代码块围栏。
+ * 这些字符进了提示词就是噪音（下游会原样发给图像 / 视频模型），落库前清掉。
+ */
+export function cleanSingle(raw: string): string {
+  let t = (raw ?? '').trim()
+  t = t.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/, '').trim()
+  t = t.replace(
+    /^(镜头描述|画面描述|长相|服装与身形|音色|描述|direction|visual\s*desc(?:ription)?|shot|prompt)\s*[:：]\s*/i,
+    ''
+  )
+  if (t.length > 1 && /^["'“”‘’「」]/.test(t) && /["'“”‘’「」]$/.test(t)) t = t.slice(1, -1).trim()
+  return t.replace(/\s*\n+\s*/g, ' ').replace(/[ \t]{2,}/g, ' ').trim()
+}
+
+/** 拆拍的 kind 只认这四种：拆分是"切现有的拍"，不该凭空造出转场 / 空镜 */
+const SPLIT_KINDS = new Set(['action', 'dialogue', 'reaction', 'insert'])
+
+/**
+ * 归一拆拍结果。
+ *
+ * 权重统一夹在 1~3：模型常给出 0、5、0.5 这类值，直接拿去算帧数会把
+ * 总时长算歪（帧数守恒是按比例分的，权重只该表达"谁长谁短"）。
+ */
+export function normalizeSplitParts(raw: unknown): BeatSplitPart[] {
+  if (!Array.isArray(raw)) return []
+  const out: BeatSplitPart[] = []
+  for (const item of raw as Array<Record<string, unknown>>) {
+    if (!item || typeof item !== 'object') continue
+    const title = String(item.title ?? '').trim()
+    if (!title) continue
+    const kind = SPLIT_KINDS.has(String(item.kind ?? '')) ? String(item.kind) : 'action'
+    const dialogue = kind === 'dialogue' ? String(item.dialogue ?? '').trim() : ''
+    if (kind === 'dialogue' && !dialogue) continue
+    const w = Math.round(Number(item.weight))
+    out.push({
+      title,
+      kind,
+      dialogue: dialogue || undefined,
+      direction: String(item.direction ?? '').trim() || undefined,
+      visualDesc: String(item.visualDesc ?? '').trim() || undefined,
+      weight: Number.isFinite(w) ? Math.min(3, Math.max(1, w)) : 2
+    })
+  }
+  return out
+}
+
 
 /**
  * 清洗模型返回的补丁：丢掉 op 非法、定位缺失、内容全空的条目。
@@ -196,13 +273,15 @@ export function normalizeAdvice(raw: StageAdvice | undefined): StageAdvice {
     entities.push({
       op,
       name,
-      type: ENTITY_TYPES.has(String(p?.type)) ? str(p?.type) : undefined,
+      type: p?.type ? (ENTITY_TYPES.has(String(p.type)) ? str(p.type) : normalizeEntityType(p.type)) : undefined,
       kind: kind === 'speaking' || kind === 'non_speaking' ? kind : undefined,
       voiceDesc: textPatch(p?.voiceDesc),
       textDesc: textPatch(p?.textDesc),
+      costumeDesc: textPatch(p?.costumeDesc),
       nameEn: textPatch(p?.nameEn),
       voiceDescEn: textPatch(p?.voiceDescEn),
       textDescEn: textPatch(p?.textDescEn),
+      costumeDescEn: textPatch(p?.costumeDescEn),
       reason: str(p?.reason)
     })
   }
@@ -256,15 +335,16 @@ function toStringArray(value: unknown): string[] {
     .filter((x) => !!x)
 }
 
-const TYPE_SET: EntityType[] = ['character', 'scene', 'prop', 'ui', 'other']
-
 /** 清理模型返回的实体草案：去重、过滤已知实体、补默认值 */
 function normalizeProposals(
   raw: unknown,
   known: Set<string>,
-  beats: Stage1Beat[]
+  beats: Stage1Beat[],
+  projectSubjects: ProjectSubjectBrief[] = []
 ): EntityProposal[] {
   const list = Array.isArray(raw) ? (raw as Stage1NewEntity[]) : []
+  // 项目层母版：同名一律视为「已有」，类型 / 设定以母版为准
+  const masters = new Map(projectSubjects.map((e) => [e.name, e]))
   const refCount = new Map<string, number>()
   const sceneNames = new Set<string>()
   for (const b of beats) {
@@ -283,29 +363,44 @@ function normalizeProposals(
     const name = String(item?.name ?? '').trim()
     if (!name || seen.has(name)) continue
     seen.add(name)
+    // 本集已有优先：本集那份才是这一集的当前状态（可能在本集里改过），
+    // 不能再从母版取一份同名副本进来。本集没有、母版有的才走「项目取用」。
     const exists = known.has(name)
-    // 被当成场景引用的名字，类型强制归正为 scene
+    const master = exists ? undefined : masters.get(name)
+    // 被当成场景引用的名字，类型强制归正为 scene（母版类型优先，母版是真相源）
     const forceScene = sceneNames.has(name)
-    const kind: EntityKind = forceScene
-      ? 'non_speaking'
-      : item?.kind === 'speaking'
-        ? 'speaking'
-        : 'non_speaking'
-    const type: EntityType = forceScene
-      ? 'scene'
-      : TYPE_SET.includes(item?.type as EntityType)
-        ? (item.type as EntityType)
-        : 'character'
+    const kind: EntityKind = master
+      ? master.kind
+      : forceScene
+        ? 'non_speaking'
+        : item?.kind === 'speaking'
+          ? 'speaking'
+          : 'non_speaking'
+    // 模型偶尔还会吐出 ui / other：统一收进口径里的三类，认不出按道具算（模型自己拿不准的十有八九是道具）
+    const type: EntityType = master
+      ? master.type
+      : forceScene
+        ? 'scene'
+        : item?.type
+          ? normalizeEntityType(item.type)
+          : 'character'
+    // 模型常把"穿着"混进长相（textDesc），这里当场拆成两个字段：
+    // 用户只在界面上点几下，没有义务回头手工拆；拆完的草案直接就是对的
+    const split = splitCostumeOf(type, item?.textDesc, item?.costumeDesc)
     out.push({
       name,
       type,
       kind,
-      voiceDesc: kind === 'speaking' ? String(item?.voiceDesc ?? '').trim() : '',
-      textDesc: String(item?.textDesc ?? '').trim(),
-      note: String(item?.note ?? '').trim(),
+      // 母版有设定就用母版（同一角色跨集必须长得一样）；母版还空着才先用模型给的
+      voiceDesc: kind === 'speaking' ? (master?.voiceDesc ?? String(item?.voiceDesc ?? '').trim()) : '',
+      textDesc: master?.textDesc ?? split.textDesc,
+      costumeDesc: master?.costumeDesc ?? split.costumeDesc,
+      note: master?.note ?? String(item?.note ?? '').trim(),
       firstAppear: item?.firstAppear ? String(item.firstAppear).trim() : '',
-      accepted: !exists,
+      accepted: master ? true : !exists,
       exists,
+      inProject: !!master,
+      projectEntityId: master?.id,
       refCount: refCount.get(name) ?? 0
     })
   }
@@ -314,18 +409,26 @@ function normalizeProposals(
   for (const [name, count] of refCount) {
     if (known.has(name) || seen.has(name)) continue
     seen.add(name)
+    const master = masters.get(name)
     const isScene = sceneNames.has(name)
     const isSpeaker = !isScene && beats.some((b) => b.speaker === name)
     out.push({
       name,
-      type: isScene ? 'scene' : 'character',
-      kind: isSpeaker ? 'speaking' : 'non_speaking',
-      voiceDesc: '',
-      textDesc: '',
-      note: isScene ? '模型未登记的场景，由片段引用反推' : '模型未登记，由片段引用反推',
+      type: master ? master.type : isScene ? 'scene' : 'character',
+      kind: master ? master.kind : isSpeaker ? 'speaking' : 'non_speaking',
+      voiceDesc: master?.voiceDesc ?? '',
+      textDesc: master?.textDesc ?? '',
+      costumeDesc: master?.costumeDesc ?? '',
+      note: master
+        ? '项目主体，由片段引用自动取用'
+        : isScene
+          ? '模型未登记的场景，由片段引用反推'
+          : '模型未登记，由片段引用反推',
       firstAppear: '',
       accepted: true,
       exists: false,
+      inProject: !!master,
+      projectEntityId: master?.id,
       refCount: count
     })
   }
@@ -350,7 +453,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
   async function runStage1(
     story: string,
     entityNames: string[],
-    settings: ProjectSettings
+    settings: ProjectSettings,
+    opts: { projectSubjects?: ProjectSubjectBrief[] } = {}
   ): Promise<Stage1Result> {
     const provider = requireProvider()
     running.value = true
@@ -361,14 +465,17 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
       const rawBeats: Stage1Beat[] = []
       const rawEntities: Stage1NewEntity[] = []
-      // 后续批次必须复用同一套命名，所以本批登记的实体立刻进入"已知"清单
+      // 后续批次必须复用同一套命名，所以本批登记的实体立刻进入"已知"清单。
+      // 项目层母版不放进这里 —— 它在提示词里有独立的清单块，
+      // 混进"本集已有"会让模型以为本集真的已经有这些实体。
+      const projectSubjects = opts.projectSubjects ?? []
       const known = new Set(entityNames)
 
       for (const [i, chunk] of chunks.entries()) {
         progress.value =
           chunks.length > 1
             ? `阶段一：正在拆解第 ${i + 1}/${chunks.length} 批（第 ${chunk.paraFrom}~${chunk.paraTo} 段）…`
-            : '阶段一：正在拆解分镜并登记实体…'
+            : '阶段一：正在拆解分镜（顺带登记新实体）…'
 
         /** 跑一次子批：解析 beats / 登记实体 / 累积到 known。空结果直接抛错 */
         const collectBatch = async (text: string, paraFrom: number, paraTo: number): Promise<void> => {
@@ -379,6 +486,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
             }>(
               buildStage1Messages(text, [...known], {
                 language: settings.workLanguage,
+                projectSubjects,
                 batch: {
                   index: i + 1,
                   total: chunks.length,
@@ -434,7 +542,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
       }))
 
       // 跨批累积后统一归一化，refCount 才是全片的真实次数
-      const newEntities = normalizeProposals(rawEntities, new Set(entityNames), beats)
+      const newEntities = normalizeProposals(rawEntities, new Set(entityNames), beats, projectSubjects)
 
       return { beats, newEntities }
     } catch (e) {
@@ -450,7 +558,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
   async function runEntityExtract(
     story: string,
     entityNames: string[],
-    settings: ProjectSettings
+    settings: ProjectSettings,
+    opts: { projectSubjects?: ProjectSubjectBrief[] } = {}
   ): Promise<EntityProposal[]> {
     const provider = requireProvider()
     running.value = true
@@ -459,6 +568,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
       const chunks = splitStory(story, settings.storyChunkChars)
       if (!chunks.length) throw new Error('故事原文是空的')
 
+      const projectSubjects = opts.projectSubjects ?? []
       const known = new Set(entityNames)
       const raw: Stage1NewEntity[] = []
 
@@ -470,7 +580,10 @@ export const usePipelineStore = defineStore('pipeline', () => {
 
         const data = await retryOnce(() =>
           provider.callJson<{ newEntities?: Stage1NewEntity[] }>(
-            buildEntityExtractMessages(chunk.text, [...known], { language: settings.workLanguage }),
+            buildEntityExtractMessages(chunk.text, [...known], {
+              language: settings.workLanguage,
+              projectSubjects
+            }),
             { temperature: 0.35 }
           )
         )
@@ -482,7 +595,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
         }
       }
 
-      return normalizeProposals(raw, new Set(entityNames), [])
+      return normalizeProposals(raw, new Set(entityNames), [], projectSubjects)
     } catch (e) {
       error.value = (e as Error).message
       throw e
@@ -642,7 +755,7 @@ export const usePipelineStore = defineStore('pipeline', () => {
     return { ok, failed }
   }
 
-  /* --------------------------- 阶段五：本地化 --------------------------- */
+  /* --------------------------- 阶段四：本地化 --------------------------- */
 
   /**
    * 第一步：词条表翻译（全片一次）。
@@ -700,11 +813,18 @@ export const usePipelineStore = defineStore('pipeline', () => {
         for (const raw of Array.isArray(data?.entities) ? data.entities : []) {
           const id = String(raw?.id ?? '').trim()
           if (!id || !entityIds.has(id)) continue
+          // 翻译同样过一遍拆字段：模型偶尔把 "wearing a uniform" 塞进 textDescEn
+          const split = splitCostumeOf(
+            entityById.get(id)?.type,
+            raw?.textDesc,
+            raw?.costumeDesc
+          )
           const patch: GlossaryEntityPatch = {
             id,
             name: String(raw?.name ?? '').trim(),
             voiceDesc: String(raw?.voiceDesc ?? '').trim(),
-            textDesc: String(raw?.textDesc ?? '').trim()
+            textDesc: split.textDesc,
+            costumeDesc: split.costumeDesc
           }
           outE.push(patch)
           const src = entityById.get(id)?.name
@@ -761,7 +881,8 @@ export const usePipelineStore = defineStore('pipeline', () => {
       segmentTotal: task.total,
       frames: task.frames,
       fps: settings.fps,
-      entityNameMap
+      entityNameMap,
+      direction: task.direction
     }
     const data = await provider.callJson<Record<string, unknown>>(
       buildLocalizeFieldsMessages(input),
@@ -915,6 +1036,46 @@ export const usePipelineStore = defineStore('pipeline', () => {
     }
   }
 
+  /* --------------------------- 单点助手 --------------------------- */
+
+  /**
+   * 单点助手不走 `running`：那是整批流水线的闸（按钮转圈、页面锁住）。
+   * 单点只在它自己那颗按钮上转圈 —— 用户经常是"补这一拍的同时还在看上一拍"，
+   * 一锁就等于把上下文也一起冻住了。
+   */
+
+  /** 只写一拍的镜头 / 画面描述 */
+  async function writeBeatField(input: BeatWriteInput): Promise<string> {
+    const provider = requireProvider()
+    const text = await retryOnce(() => provider.callText(buildBeatWriteMessages(input), { temperature: 0.5 }))
+    const clean = cleanSingle(text)
+    if (!clean) throw new Error('模型没有返回内容')
+    return clean
+  }
+
+  /**
+   * 把一拍拆细。返回的是"建议的几拍"，落库由调用方决定
+   * —— 拆拍会换掉这一拍的 id，必须让人先看一眼再点确认。
+   */
+  async function splitBeatByAi(input: BeatSplitInput): Promise<BeatSplitPart[]> {
+    const provider = requireProvider()
+    const data = await retryOnce(() =>
+      provider.callJson<{ beats?: unknown }>(buildBeatSplitMessages(input), { temperature: 0.4 })
+    )
+    const parts = normalizeSplitParts(data?.beats)
+    if (parts.length < 2) throw new Error('模型没有拆出多拍：可以补一句要求再试')
+    return parts
+  }
+
+  /** 只写主体的一个描述字段（长相 / 服装 / 音色） */
+  async function writeEntityDesc(input: EntityWriteInput): Promise<string> {
+    const provider = requireProvider()
+    const text = await retryOnce(() => provider.callText(buildEntityWriteMessages(input), { temperature: 0.55 }))
+    const clean = cleanSingle(text)
+    if (!clean) throw new Error('模型没有返回内容')
+    return clean
+  }
+
   function reset() {
     running.value = false
     progress.value = ''
@@ -935,6 +1096,9 @@ export const usePipelineStore = defineStore('pipeline', () => {
     localizeSegments,
     runAdvice,
     runFix,
+    writeBeatField,
+    splitBeatByAi,
+    writeEntityDesc,
     reset
   }
 })

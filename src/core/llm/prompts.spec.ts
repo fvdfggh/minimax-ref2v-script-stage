@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
+  buildAssetPromptMessages,
+  buildEntityExtractMessages,
   buildGlossaryMessages,
+  buildKeyframePlanMessages,
   buildSegmentFillMessages,
   buildStage1Messages,
-  buildStage2Messages
+  buildStage2Messages,
+  type KeyframePlanBeat
 } from './prompts'
 import { DEFAULT_FIELD_SCHEMA, DEFAULT_SETTINGS } from '@/domain/types'
 import type { Asset, Beat, Entity, FieldSchema } from '@/domain/types'
@@ -225,7 +229,69 @@ describe('阶段一：分批拆解', () => {
   })
 })
 
+describe('阶段一：拆细 + 台词拍不带动作', () => {
+  const [system] = buildStage1Messages('故事', [])
+  const text = system.content as string
+
+  it('★ 台词拍只装「说」：说话前的动作必须先有自己的一拍', () => {
+    expect(text).toContain('台词 Beat 只装「说」这一件事')
+    expect(text).toContain('说话前该做的动作必须先有自己的一拍')
+    expect(text).toContain('不许出现任何身体动作')
+    // 给了正解与反例，别只写一句"要拆开"
+    expect(text).toContain('林晚抬头看他，把找零推回去')
+    expect(text).toContain('先动作，后台词，再后续动作')
+  })
+
+  it('★ 禁止用缝合词把动作缝进台词拍', () => {
+    expect(text).toContain('一边…一边')
+    expect(text).toContain('顺手')
+  })
+
+  it('★ 一句台词一个 dialogue Beat，且不许合并两句话', () => {
+    expect(text).toContain('对应**一个** dialogue Beat')
+    expect(text).toContain('不同的话不许并进同一拍')
+  })
+
+  it('★ 一个动作一拍：并列动词必须拆开', () => {
+    expect(text).toContain('一个 Beat 只放一个动作')
+    expect(text).toContain('陈默推门进来，环顾四周，走向柜台')
+  })
+
+  it('★ 输出前带自检清单（模型对"逐条打勾"更服从）', () => {
+    expect(text).toContain('A2. 出结果前自检')
+    expect(text).toContain('每个 dialogue Beat 的 title 里都没有身体动作')
+    expect(text).toContain('原文每一句台词都对得上一个 dialogue Beat')
+  })
+
+  it('★ 用户回合也重申一次，别把关键约束只放系统提示里', () => {
+    const [, user] = buildStage1Messages('故事', [])
+    expect(user.content).toContain('台词拍只说话')
+    expect(user.content).toContain('动作各自成拍')
+  })
+
+  it('★ 给「原文长度 → 片段数」的量化基准，防止模型按自己的预算压缩条数', () => {
+    const [, user] = buildStage1Messages('一'.repeat(240), [])
+    expect(user.content).toContain('约 240 字')
+    expect(user.content).toContain('15~30 个片段')
+    expect(user.content).toContain('就是拆粗了')
+  })
+
+  it('原文太短时不硬给篇幅参考，避免为了凑数而造片段', () => {
+    const [, user] = buildStage1Messages('很短。', [])
+    expect(user.content).not.toContain('篇幅参考')
+  })
+})
+
 describe('阶段二：分批填充', () => {
+  it('★ 台词拍的 visualDesc 不许写动作（否则就成了"一边动一边说"）', () => {
+    const [system] = buildStage2Messages(BEATS, ENTITIES)
+    expect(system.content).toContain('visualDesc 只写**说话这一瞬间**')
+    expect(system.content).toContain('那些动作在这一拍之前的镜头里已经做完了')
+    expect(system.content).toContain('也不要把听者的反应写进台词拍')
+    // 非台词拍照常写动作，别一刀切
+    expect(system.content).toContain('非台词 Beat 不受此限')
+  })
+
   it('★ 分批时带上本批批号，并回喂上一批已填好的细节做风格锚点', () => {
     const [system, user] = buildStage2Messages(BEATS, ENTITIES, {
       batch: { index: 2, total: 5 },
@@ -248,7 +314,7 @@ describe('阶段二：分批填充', () => {
   })
 })
 
-describe('阶段五：分批翻译词条', () => {
+describe('阶段四：分批翻译词条', () => {
   it('★ 已定稿译名必须逐字复用，防止跨批译名漂移', () => {
     const [system, user] = buildGlossaryMessages({
       beats: [],
@@ -358,5 +424,167 @@ describe('参考素材说明：供大模型读取，但不进最终提示词', (
     // 说明只作为「只读上下文」出现在模型输入里，绝不进入最终交付的提示词
     expect(finalText).not.toContain(DESC)
     expect(finalText).not.toContain('撑着油纸伞')
+  })
+})
+
+describe('buildKeyframePlanMessages：AI 排关键帧', () => {
+  const PLAN_BEATS: KeyframePlanBeat[] = [
+    {
+      index: 1,
+      title: '林晚擦收银台',
+      kind: '对白',
+      frames: 24,
+      fps: 24,
+      direction: '固定机位，缓慢推近',
+      visualDesc: '林晚第三遍擦收银台，抬头看向门口',
+      dialogue: '又是你。',
+      scene: '便利店门面',
+      cast: ['林晚（24 岁，丸子头，便利店制服）'],
+      existingFrames: [7, 12]
+    },
+    { index: 2, title: '推门进来', kind: '动作', frames: 36, fps: 24 }
+  ]
+
+  it('把帧数 / 已有帧 / 运镜 / 外观交给模型，并写明"一张够就放开场"', () => {
+    const [system, user] = buildKeyframePlanMessages({ beats: PLAN_BEATS })
+    // 位置规则：范围 + 默认开场 + 上限
+    expect(system.content).toContain('0 到 frames-1')
+    expect(system.content).toContain('放在开场（frame 0）')
+    expect(system.content).toContain('最多 3 张')
+    // 提示词必须是英文单帧画面，不能有文字水印
+    expect(system.content).toContain('英文')
+    expect(system.content).toContain('水印')
+    expect(user.content).toContain('24 帧')
+    expect(user.content).toContain('已有帧：7 / 12')
+    expect(user.content).toContain('林晚（24 岁，丸子头，便利店制服）')
+    expect(user.content).toContain('固定机位，缓慢推近')
+    // 没给已有帧的段要写"无"，模型才不会以为漏了
+    expect(user.content).toContain('已有帧：无')
+  })
+
+  it('每段张数上限跟着参数走', () => {
+    const [system] = buildKeyframePlanMessages({ beats: PLAN_BEATS, maxPerBeat: 2 })
+    expect(system.content).toContain('最多 2 张')
+    expect(system.content).not.toContain('最多 3 张')
+  })
+})
+
+describe('buildKeyframePlanMessages：给 AI 的补充要求', () => {
+  const BEATS: KeyframePlanBeat[] = [
+    { index: 1, title: '推门进来', kind: '动作', frames: 36, fps: 24 },
+    { index: 2, title: '林晚抬头', kind: '对白', frames: 24, fps: 24 }
+  ]
+
+  it('原话交给模型，并说明它不能越过帧号范围与张数上限', () => {
+    const [system, user] = buildKeyframePlanMessages({ beats: BEATS, note: '动作大的段多排两张，别给特写' })
+    expect(user.content).toContain('【补充要求】动作大的段多排两张，别给特写')
+    expect(system.content).toContain('不能改变 frame 范围与张数上限')
+  })
+
+  it('没填就不出现这一段，别给模型留一个空标题', () => {
+    const [, user] = buildKeyframePlanMessages({ beats: BEATS, note: '   ' })
+    expect(user.content).not.toContain('【补充要求】')
+  })
+})
+
+describe('buildAssetPromptMessages：把一句要求写成提示词', () => {
+  const base = {
+    brief: '雨夜巷口，他回头看一眼',
+    beat: {
+      title: '回头',
+      kind: '动作',
+      frames: 36,
+      fps: 24,
+      direction: '手持跟拍',
+      visualDesc: '陈默走进雨里',
+      dialogue: '',
+      scene: '老巷子 — 湿漉漉的青石板'
+    },
+    cast: ['Chen Mo（early thirties, short hair）'],
+    refs: [{ pictureN: 3, name: 'Chen Mo', desc: 'early thirties, short hair' }],
+    asReference: true
+  }
+
+  it('用户那句要求和段落上下文都交给模型', () => {
+    const [, user] = buildAssetPromptMessages(base)
+    expect(user.content).toContain('雨夜巷口，他回头看一眼')
+    expect(user.content).toContain('手持跟拍')
+    expect(user.content).toContain('湿漉漉的青石板')
+    expect(user.content).toContain('Chen Mo（early thirties, short hair）')
+    expect(user.content).toContain('36 帧')
+  })
+
+  it('参考方式：参考图写成 <Picture N> 名字 — 外观，并在正文要求里点名', () => {
+    const [system, user] = buildAssetPromptMessages(base)
+    expect(user.content).toContain('<Picture 3> Chen Mo — early thirties, short hair')
+    expect(user.content).toContain('必须出现 <Picture N>')
+    // 编号要贴着人名出现，否则模型会写成"陈默在 Picture 3 里"这种读不通的句子
+    expect(system.content).toContain('在提到他的那一句开头')
+  })
+
+  it('关键帧方式：参考图只写名字与外观，不出现编号', () => {
+    const [, user] = buildAssetPromptMessages({ ...base, asReference: false })
+    expect(user.content).toContain('- Chen Mo — early thirties, short hair')
+    expect(user.content).not.toContain('<Picture 3>')
+    expect(user.content).not.toContain('必须出现 <Picture N>')
+  })
+
+  it('没有参考图时写"（无）"，别留空行让模型自己编一个人', () => {
+    const [, user] = buildAssetPromptMessages({ ...base, refs: [] })
+    expect(user.content).toContain('（无）')
+  })
+
+  it('硬性要求覆盖：英文单段、不写文字水印、不写元信息、16:9', () => {
+    const [system] = buildAssetPromptMessages(base)
+    expect(system.content).toContain('英文、单段')
+    expect(system.content).toContain('水印')
+    expect(system.content).toContain('第几帧')
+    expect(system.content).toContain('16:9')
+  })
+})
+
+/* ------------------------------------------------------------------ *
+ * 拆解：外部项目（系列）主体作为上下文
+ * ------------------------------------------------------------------ */
+
+describe('阶段一：外部项目主体', () => {
+  it('★ 带上项目层主体的设定，并要求按名字引用、不许重复定义', () => {
+    const [system] = buildStage1Messages('故事', [], {
+      projectSubjects: [
+        {
+          id: 'g1',
+          name: '林医生',
+          type: 'character',
+          kind: 'speaking',
+          textDesc: '短发，右眉一道旧疤',
+          costumeDesc: '白大褂',
+          voiceDesc: '低沉男声'
+        }
+      ]
+    })
+    expect(system.content).toContain('外部项目主体')
+    expect(system.content).toContain('林医生')
+    // 只有名字不够：长相 / 服装 / 音色都得在，模型才不会在本集重编一套
+    expect(system.content).toContain('右眉一道旧疤')
+    expect(system.content).toContain('白大褂')
+    expect(system.content).toContain('低沉男声')
+    expect(system.content).toContain('不要写进 newEntities')
+  })
+
+  it('项目层没有主体时，明确说明"先建空主体再拆解"', () => {
+    const [system] = buildStage1Messages('故事', [])
+    expect(system.content).toContain('外部项目暂无主体')
+    expect(system.content).toContain('先在项目层建立一个空主体')
+  })
+
+  it('实体梳理同样带项目主体清单', () => {
+    const [system] = buildEntityExtractMessages('故事', [], {
+      projectSubjects: [{ name: '老宅正厅', type: 'scene', kind: 'non_speaking', textDesc: '斑驳的木梁' }]
+    })
+    expect(system.content).toContain('外部项目主体')
+    expect(system.content).toContain('老宅正厅')
+    expect(system.content).toContain('斑驳的木梁')
+    // 场景的描述标签应是「环境」，不是「长相」
+    expect(system.content).toContain('环境：斑驳的木梁')
   })
 })

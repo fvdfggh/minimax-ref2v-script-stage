@@ -1,18 +1,15 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { afterAll, describe, expect, it } from 'vitest'
 import {
-  backendConfig,
   backendExportProjectZip,
   backendHealth,
   backendImportZip,
   backendRoots,
-  backendSetDataDir,
   createBackendDb,
+  getBackendBase,
   setBackendBase,
   setBackendProject
 } from './backend'
+import { startIsolatedBackend } from './isolatedBackend'
 import type { Project } from '@/domain/types'
 
 /* ------------------------------------------------------------------ *
@@ -24,37 +21,29 @@ import type { Project } from '@/domain/types'
  * 后端没起就整组跳过：这是联调，不该让 CI 因为没开服务而失败。
  * ------------------------------------------------------------------ */
 
-const BASE = process.env.SCRIPTSTAGE_BACKEND ?? 'http://127.0.0.1:8787'
+/*
+ * 自带一个隔离后端：数据目录在系统临时目录、端口随机，跑完连进程一起收掉。
+ *
+ * 以前是「PUT /api/config 把用户后端的**数据目录**临时切到 scratch，跑完再切回来」。
+ * 这有两个坑，都真实踩过：
+ *   - 测试跑着的时候用户刷新页面，看到的是空项目列表；
+ *   - 中途崩了就没机会切回，`~/.scriptstage/config.json` 会永久指向一个临时目录，
+ *     用户下次启动后端直接空库。
+ * 现在用户的 8787 和真实数据目录一个字节都不碰。
+ */
+const iso = await startIsolatedBackend()
+if (iso) setBackendBase(iso.base)
+const describeIf = iso ? describe : describe.skip
 
-setBackendBase(BASE)
-const health = await backendHealth()
-const describeIf = health ? describe : describe.skip
-
-let originalDir = ''
-let scratch = ''
 const db = createBackendDb()
 
 describeIf('后端联调（真实 HTTP）', () => {
-  beforeAll(async () => {
-    originalDir = (await backendConfig()).dataDir
-    scratch = mkdtempSync(join(tmpdir(), 'scriptstage-it-'))
-    await backendSetDataDir(scratch)
-  })
-
-  afterAll(async () => {
-    if (originalDir) {
-      try {
-        await backendSetDataDir(originalDir)
-      } catch {
-        /* 切不回去也不影响 */
-      }
-    }
-    rmSync(scratch, { recursive: true, force: true })
-  })
-
-  it('健康接口返回数据目录', () => {
+  it('健康接口返回数据目录', async () => {
+    const health = await backendHealth()
     expect(health?.ok).toBe(true)
     expect(health?.dataDir).toBeTruthy()
+    // 数据目录必须是本次测试的临时目录，不是用户的 .itest-data
+    expect(health?.dataDir).toBe(iso!.dir)
   })
 
   it('项目写入后能被 orderBy(...).reverse() 读到', async () => {
@@ -109,7 +98,7 @@ describeIf('后端联调（真实 HTTP）', () => {
     expect(row).toBeTruthy()
     expect((row as unknown as { blob?: unknown }).blob).toBeUndefined()
 
-    const res = await fetch(`${BASE}/api/projects/prj_it01/assets/Picture3.png`)
+    const res = await fetch(`${getBackendBase()}/api/projects/prj_it01/assets/Picture3.png`)
     expect(res.ok).toBe(true)
     expect((await res.arrayBuffer()).byteLength).toBe(7)
   })
@@ -119,6 +108,26 @@ describeIf('后端联调（真实 HTTP）', () => {
     await db.beats.delete('b2')
     const rows = await db.beats.where('projectId').equals('prj_it01').toArray()
     expect(rows.map((r) => r.id)).toEqual(['b1'])
+  })
+
+  it('删除按行自己的项目走，不受"当前项目"被切走的影响', async () => {
+    // 两个项目各一条素材（真实页面也是"先读到、再删"）
+    await db.assets.put({ id: 'a_it_a', projectId: 'prj_it01', pictureN: 0 } as never)
+    await db.assets.put({ id: 'a_it_b', projectId: 'prj_other', pictureN: 0 } as never)
+    await db.assets.where('projectId').equals('prj_it01').toArray()
+
+    // 模拟"系列页/主体取用"把上下文切到了别的项目
+    setBackendProject('prj_other')
+    await db.assets.delete('a_it_a')
+
+    // 目标项目的这条必须真的没了……
+    const inA = await db.assets.where('projectId').equals('prj_it01').toArray()
+    expect(inA.some((r) => r.id === 'a_it_a')).toBe(false)
+    // ……而当时"当前项目"里的数据不许被误删
+    const inB = await db.assets.where('projectId').equals('prj_other').toArray()
+    expect(inB.some((r) => r.id === 'a_it_b')).toBe(true)
+
+    await db.assets.delete('a_it_b')
   })
 
   it('清空集合（where 后不带 ids）', async () => {
@@ -145,4 +154,8 @@ describeIf('后端联调（真实 HTTP）', () => {
     const beats = await db.beats.where('projectId').equals(res.projectId!).toArray()
     expect(beats.map((b) => b.id)).toEqual(['b1'])
   })
+})
+
+afterAll(async () => {
+  await iso?.stop()
 })

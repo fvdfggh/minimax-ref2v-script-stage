@@ -4,8 +4,6 @@ import {
   NAlert,
   NButton,
   NCheckbox,
-  NDrawer,
-  NDrawerContent,
   NInput,
   NModal,
   useMessage
@@ -25,6 +23,8 @@ import type {
   StageAdvice
 } from '@/core/llm/advice'
 import type { Beat, Entity } from '@/domain/types'
+import DetailModal from './DetailModal.vue'
+import InfoTip from './common/InfoTip.vue'
 
 const props = defineProps<{
   stage: AdviceStage
@@ -33,6 +33,13 @@ const props = defineProps<{
   placeholder?: string
   /** 直接给几句常用说法，省得每次从零组织语言 */
   presets?: string[]
+  /**
+   * 由页面自己摆位（摆进工具条）时传 true：入口不再 fixed 悬浮。
+   *
+   * 为什么要这个：③ 页里「组合」和「整段字段」现在是同一屏的两层，
+   * 两个悬浮球会叠在右下角 —— 一个压着另一个，谁也点不准。
+   */
+  inline?: boolean
 }>()
 
 const emit = defineEmits<{ applied: [] }>()
@@ -71,12 +78,13 @@ const views = computed(() => {
     ordered.value,
     settings.value,
     registry.entityById,
-    project.fieldSchema
+    project.fieldSchema,
+    registry.assets
   )
 })
 
 const segmentBriefs = computed<AdviceSegmentBrief[]>(() =>
-  views.value.map((v, i) => ({ index: i + 1, beats: v.beats, fields: v.fields, stale: v.stale }))
+  views.value.map((v, i) => ({ index: i + 1, beats: v.beats, fields: v.delivery, stale: v.stale }))
 )
 
 const groupIds = computed(() => views.value.map((v) => v.group.id))
@@ -199,7 +207,7 @@ const rows = computed<ChangeRow[]>(() => {
   })
 
   ;(a.fields ?? []).forEach((p, i) => {
-    const cur = views.value[p.segment - 1]?.fields[p.key] ?? ''
+    const cur = views.value[p.segment - 1]?.delivery[p.key] ?? ''
     out.push({
       key: `f${i}`,
       kind: '字段',
@@ -283,7 +291,8 @@ async function confirm() {
   }
   busy.value = true
   try {
-    const res = await advice.apply(a, groupIds.value)
+    // 交付页改的是英文终稿，其它阶段改中文工作稿
+    const res = await advice.apply(a, groupIds.value, props.stage === 'deliver' ? 'en' : 'zh')
     open.value = false
     request.value = ''
 
@@ -319,7 +328,7 @@ async function confirm() {
       res.entities.updated +
       res.entities.deleted
     if (dirty && withSegments.value) {
-      message.info('受影响的段字段已标记为需要重新生成，去「④ 字段补全」处理', { duration: 5000 })
+      message.info('受影响的段字段已标记为需要重新生成，去「③ 组合与缝合」下面的字段补全处理', { duration: 5000 })
     }
   } catch (e) {
     message.error((e as Error).message)
@@ -334,7 +343,7 @@ async function confirm() {
     外壳本身不占布局：入口是 fixed 悬浮按钮，抽屉/弹窗都走 Teleport。
     所以放在页面哪个位置都行，各阶段不用再为它留版面。
   -->
-  <div>
+  <div :class="{ 'is-inline': inline }">
     <button
       class="advice-fab"
       type="button"
@@ -348,14 +357,14 @@ async function confirm() {
       <span v-if="report.length" class="advice-fab-dot" />
     </button>
 
-    <n-drawer v-model:show="panelOpen" :width="440" placement="right">
-      <n-drawer-content closable>
-        <template #header>提意见</template>
-
-        <div class="stack" style="gap: 12px">
-          <div class="muted" style="font-size: 12.5px; line-height: 1.75">
-            {{ ADVICE_STAGE_LABEL[stage] }} · 模型只负责判断「哪些对象要改、改成什么」，
-            输出结构化补丁；你逐条确认之后才会写进库。
+    <DetailModal v-model:show="panelOpen" title="提意见" :width="620">
+      <div class="stack" style="gap: 12px">
+          <div class="muted row" style="font-size: 12.5px; gap: 0; align-items: center">
+            {{ ADVICE_STAGE_LABEL[stage] }}
+            <InfoTip
+              :width="340"
+              text="模型只负责判断「哪些对象要改、改成什么」，输出结构化补丁；你逐条确认之后才会写进库。"
+            />
           </div>
 
           <n-input
@@ -402,8 +411,7 @@ async function confirm() {
             <div v-for="(line, i) in report" :key="i" class="issue info">{{ line }}</div>
           </div>
         </div>
-      </n-drawer-content>
-    </n-drawer>
+    </DetailModal>
 
     <n-modal v-model:show="open" preset="card" title="确认改动" style="max-width: 880px">
       <n-alert v-if="result?.summary" type="info" :bordered="false" style="margin-bottom: 10px">
@@ -411,8 +419,9 @@ async function confirm() {
       </n-alert>
 
       <div class="row-between" style="margin-bottom: 8px">
-        <span class="muted" style="font-size: 12.5px">
-          勾选要应用的条目。没被点到的对象模型不会动，也不会顺手润色。
+        <span class="muted row" style="font-size: 12.5px; gap: 0; align-items: center">
+          勾选要应用的条目
+          <InfoTip size="sm" :width="280" text="没被点到的对象模型不会动，也不会顺手润色。" />
         </span>
         <div class="row" style="gap: 6px">
           <n-button size="tiny" quaternary @click="picked = new Set(rows.map((r) => r.key))">
@@ -425,7 +434,7 @@ async function confirm() {
       <div v-if="!rows.length" class="empty" style="padding: 24px">
         <div>模型没有给出任何改动</div>
         <div class="muted" style="font-size: 12px; margin-top: 6px">
-          可能是你的意见本身不需要改结构，或者诉求它判断表达不了 —— 看下面的说明
+          可能是你的意见本身不需要改结构，或者诉求它判断表达不了
         </div>
       </div>
 
@@ -446,8 +455,8 @@ async function confirm() {
                 :checked="picked.has(r.key)"
                 @update:checked="() => toggle(r.key)"
               />
-              <span class="tag-chip" style="background: #eef1f6; color: #5b6273">{{ r.kind }}</span>
-              <span class="tag-chip" :style="{ background: r.op === 'delete' ? '#fdecec' : '#e9f7ef', color: r.op === 'delete' ? '#a12d2d' : '#217a52' }">
+              <span class="tag-chip" style="background: var(--hover); color: var(--label)">{{ r.kind }}</span>
+              <span class="tag-chip" :style="{ background: r.op === 'delete' ? 'var(--err-soft)' : 'var(--ok-soft)', color: r.op === 'delete' ? 'var(--err-ink)' : 'var(--ok-ink)' }">
                 {{ OP_LABEL[r.op] ?? r.op }}
               </span>
               <span style="font-weight: 600; font-size: 13px">{{ r.target }}</span>
@@ -467,12 +476,12 @@ async function confirm() {
                 <span class="muted" style="width: 64px; flex: 0 0 64px">{{ c.label }}</span>
                 <span
                   class="mono"
-                  style="flex: 1; color: #a12d2d; text-decoration: line-through; word-break: break-word"
+                  style="flex: 1; color: var(--err-ink); text-decoration: line-through; word-break: break-word"
                 >
                   {{ c.before }}
                 </span>
                 <span class="muted">→</span>
-                <span class="mono" style="flex: 1; color: #217a52; word-break: break-word">
+                <span class="mono" style="flex: 1; color: var(--ok-ink); word-break: break-word">
                   {{ c.after }}
                 </span>
               </div>
@@ -493,8 +502,13 @@ async function confirm() {
 
       <template #footer>
         <div class="row-between">
-          <span class="muted" style="font-size: 12px">
-            应用后：编号会重算，新片段会并入相邻段，受影响的段字段会标记为需要重新生成
+          <span class="muted row" style="font-size: 12px; gap: 0; align-items: center">
+            应用后编号会重算
+            <InfoTip
+              size="sm"
+              :width="300"
+              text="新片段会并入相邻段，受影响的段字段会标记为需要重新生成。"
+            />
           </span>
           <div class="row" style="gap: 8px">
             <n-button @click="open = false">取消</n-button>
@@ -575,5 +589,39 @@ async function confirm() {
 .advice-preset:hover {
   border-color: var(--accent);
   color: var(--accent);
+}
+
+/* ------------------------------------------------------------------ *
+ * 摆进工具条：不再是悬浮球
+ *
+ * 悬浮球是"这一页还有一个入口"，而 ③ 页里字段只是同一屏的一层。
+ * 沉进工具条之后它和「全部展开 / 补全空缺」同级，不抢主按钮的位置。
+ * ------------------------------------------------------------------ */
+.is-inline {
+  display: inline-flex;
+  min-width: 0;
+}
+
+.is-inline .advice-fab {
+  position: static;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--panel);
+  color: var(--label);
+  font-size: 11.5px;
+  font-weight: 500;
+  box-shadow: none;
+}
+
+.is-inline .advice-fab:hover {
+  border-color: var(--accent-line);
+  color: var(--accent);
+}
+
+.is-inline .advice-fab svg {
+  width: 12px;
+  height: 12px;
 }
 </style>
