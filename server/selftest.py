@@ -6,9 +6,13 @@
 
 from __future__ import annotations
 
+import io
+import json
 import shutil
 import sys
 import tempfile
+import time
+import zipfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -52,6 +56,17 @@ def main() -> int:
         check("同 id 再写是覆盖而不是追加", len(beats) == 1 and beats[0]["title"] == "醒来（改）")
         ws.delete_rows("prj_abc123", "beats", ["b1"])
         check("按 id 删除生效", ws.get_collection("prj_abc123", "beats") == [])
+
+        # ---- 变更指纹（前端靠它发现"别处改过"）----
+        revs = ws.collection_revs("prj_abc123")
+        check("指纹覆盖项目 / meta / 四个集合", set(revs) == {"project", "meta", "entities", "beats", "assemblies", "assets"})
+        before = revs["beats"]
+        # 文件系统时间戳精度有限：同一纳秒内连写两次会拿到同一个指纹，
+        # 这里显式等一下，测的是"写库会让指纹变"而不是时序运气
+        time.sleep(0.02)
+        ws.put_rows("prj_abc123", "beats", [{"id": "b9", "projectId": "prj_abc123", "title": "指纹"}])
+        check("写库后指纹必变", ws.collection_revs("prj_abc123")["beats"] != before)
+        ws.delete_rows("prj_abc123", "beats", ["b9"])
 
         # ---- meta / kv ----
         ws.put_meta("prj_abc123", {"overrides:prj_abc123": {"g1": {"summary": "x"}}})
@@ -101,6 +116,141 @@ def main() -> int:
             check("导入进了索引", any(r["id"] == res["projectId"] for r in other.list_index()))
         finally:
             shutil.rmtree(other_root, ignore_errors=True)
+
+        # ---- 项目包导出 / 导入：连各集、素材、音色包一起走 ----
+        # 这一节对应「换一台设备接着做」：只带走一份 JSON 是不够的。
+        packs_src = Path(tempfile.mkdtemp(prefix="scriptstage-packs-"))
+        packs_dst = Path(tempfile.mkdtemp(prefix="scriptstage-packs2-"))
+        tree_root = Path(tempfile.mkdtemp(prefix="scriptstage-tree-"))
+        try:
+            (packs_src / "v_ok.s2voice").write_bytes(b"S2VOICE" * 64)
+            (packs_src / "v_ok.json").write_text('{"id": "v_ok"}', encoding="utf-8")
+
+            tree = Workspace(tree_root, pack_dir=packs_src)
+            tree.ensure()
+            tree.put_project(
+                {
+                    "id": "srs_t1",
+                    "name": "夜班",
+                    "kind": "series",
+                    "episodeIds": ["epi_t1", "epi_t2"],
+                    "story": "",
+                    "stage": "deliver",
+                    "settings": {"fps": 24},
+                    "fieldSchema": [],
+                    "createdAt": 1,
+                    "updatedAt": 1,
+                }
+            )
+            for i, (eid, pack) in enumerate((("epi_t1", "v_ok"), ("epi_t2", "v_gone")), start=1):
+                tree.put_project(
+                    {
+                        "id": eid,
+                        "name": f"第0{i}集",
+                        "kind": "episode",
+                        "seriesId": "srs_t1",
+                        "story": "s",
+                        "stage": "split",
+                        "settings": {"fps": 24},
+                        "fieldSchema": [],
+                        "createdAt": 1,
+                        "updatedAt": 1,
+                    }
+                )
+                tree.put_rows(
+                    eid,
+                    "entities",
+                    [{"id": f"ent_{i}", "projectId": eid, "name": "林小满", "voicePack": {"id": pack}}],
+                )
+                tree.put_rows(
+                    eid, "beats", [{"id": f"b_{i}", "projectId": eid, "dialogue": "你好"}]
+                )
+                tree.write_asset(eid, f"Picture{i}.png", PNG)
+
+            bundle = tree.export_project("srs_t1")
+            check("项目包是 zip", bundle[:2] == b"PK")
+
+            with zipfile.ZipFile(io.BytesIO(bundle)) as zf:
+                names = zf.namelist()
+                manifest = json.loads(zf.read("manifest.json"))
+            check("项目包里含项目与两集", len([n for n in names if n.endswith("project.json")]) == 3)
+            check("音色包被打进包", "voices/packs/v_ok.s2voice" in names)
+            check(
+                "导出时就记下缺失音色包",
+                [m["id"] for m in manifest["missing"]["voicePacks"]] == ["v_gone"],
+            )
+            check("包里有给人看的 README", "README.txt" in names)
+
+            # 另一台"设备"：只有一份空数据目录
+            dst = Workspace(packs_dst / "data", pack_dir=packs_dst)
+            dst.ensure()
+            res = dst.import_bytes(bundle, mode="new")
+            root_proj = dst.get_project(res["projectId"])
+            check("根项目重新分配了 id", root_proj is not None and res["projectId"] != "srs_t1")
+            check("两集都跟着回来了", len(root_proj["episodeIds"]) == 2)
+            check("音色包落到本机目录", (packs_dst / "v_ok.s2voice").is_file())
+            check("缺失清单原样带到对面", [m["id"] for m in res["missingPacks"]] == ["v_gone"])
+
+            for eid in root_proj["episodeIds"]:
+                ep = dst.get_project(eid)
+                ents = dst.get_collection(eid, "entities")
+                beats = dst.get_collection(eid, "beats")
+                check(f"集 {eid} 挂回新根", ep["seriesId"] == res["projectId"])
+                check(
+                    f"集 {eid} 的行 projectId 全部重映射",
+                    all(r["projectId"] == eid for r in ents + beats),
+                )
+                check(f"集 {eid} 的素材回来了", len(dst.list_assets(eid)) == 1)
+
+            again = dst.import_bytes(bundle, mode="new")
+            check("二次导入音色包是跳过而不是覆盖", again["voicePacks"]["kept"] == ["v_ok"])
+            check("二次导入仍是一份包文件", len(list(packs_dst.glob("*.s2voice"))) == 1)
+
+            # replace：落回原来的 id（同一台设备重装时用）
+            tree.put_project(
+                {
+                    "id": "epi_solo",
+                    "name": "单独一集",
+                    "kind": "episode",
+                    "seriesId": None,
+                    "story": "",
+                    "stage": "split",
+                    "settings": {},
+                    "fieldSchema": [],
+                    "createdAt": 1,
+                    "updatedAt": 1,
+                }
+            )
+            solo = tree.export_project("epi_solo")
+            replaced = dst.import_bytes(solo, mode="replace")
+            check("replace 模式沿用原 id", replaced["projectId"] == "epi_solo")
+        finally:
+            for d in (packs_src, packs_dst, tree_root):
+                shutil.rmtree(d, ignore_errors=True)
+
+        # ---- 删系列要连集一起删 ----
+        # 本的坑：DELETE 只认传进来的 id，直接调 API 删系列会留下孤儿集
+        # （列表里查无此根，磁盘上还占着）。
+        tree2_root = Path(tempfile.mkdtemp(prefix="scriptstage-cascade-"))
+        try:
+            t2 = Workspace(tree2_root)
+            t2.ensure()
+            t2.put_project(
+                {"id": "srs_c1", "name": "系列", "kind": "series", "episodeIds": ["epi_c1"],
+                 "story": "", "stage": "split", "settings": {}, "fieldSchema": [],
+                 "createdAt": 1, "updatedAt": 1}
+            )
+            t2.put_project(
+                {"id": "epi_c1", "name": "第01集", "kind": "episode", "seriesId": "srs_c1",
+                 "story": "", "stage": "split", "settings": {}, "fieldSchema": [],
+                 "createdAt": 1, "updatedAt": 1}
+            )
+            t2.delete_project("srs_c1")
+            check("删系列后集也没了", t2.get_project("epi_c1") is None)
+            check("删系列后索引干净", t2.list_index() == [])
+            check("删系列后目录也没了", not (t2.root / "projects" / "epi_c1").exists())
+        finally:
+            shutil.rmtree(tree2_root, ignore_errors=True)
 
         # ---- 整库导出 / 导入 ----
         ws.put_providers([{"id": "p1", "name": "openai", "model": "gpt"}])

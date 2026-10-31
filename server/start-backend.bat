@@ -40,6 +40,11 @@ if not defined PY (
 
 echo 使用解释器: %PY%
 echo.
+echo 注意：这里只起后端。
+echo   * 日常使用请双击项目根目录的「启动剧本台.bat」—— 它会先构建前端，
+echo     再让后端把页面和接口一起发在 8787，浏览器直接打开就能用。
+echo   * 开发前端时这样起后端，另开一个窗口跑 npm run dev（vite 代理 /api）。
+echo.
 "%PY%" server\app.py --port 8787
 
 echo.

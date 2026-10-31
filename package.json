@@ -4,12 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "start": "node scripts/serve.mjs",
+    "start:fast": "node scripts/serve.mjs --no-build",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:auth": "python server/test_auth.py"
   },
   "dependencies": {
     "dexie": "^4.0.10",
