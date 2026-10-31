@@ -1,0 +1,8 @@
+# 剧本台后端的第三方依赖（其余全部走标准库）
+#
+# 只有「设定图拼接」需要它：把组头 + 三视图拼成 1376×768 的 16:9 参考图。
+# 没装的话后端其它功能都正常，只有 /api/sheet/compose 会返回
+#   400 服务端缺 Pillow：`pip install pillow` 后重启后端
+#
+# 安装：  python -m pip install -r server/requirements.txt
+pillow>=10
